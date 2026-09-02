@@ -126,6 +126,14 @@ def list_review_queue(user_id: str) -> list[Dict[str, Any]]:
     return get_repository().list_review_queue(user_id)
 
 
+def record_coverage(user_id: str, source: str, covered_from: str, covered_to: str, account_id: Optional[str] = None) -> None:
+    get_repository().record_coverage(user_id, source, covered_from, covered_to, account_id)
+
+
+def list_coverage(user_id: str) -> list[Dict[str, Any]]:
+    return get_repository().list_coverage(user_id)
+
+
 def create_review(user_id: str, candidate_id: Optional[str], transaction_id: Optional[str], action: str, changes: Dict[str, Any]) -> str:
     return get_repository().create_review(user_id, candidate_id, transaction_id, action, changes)
 

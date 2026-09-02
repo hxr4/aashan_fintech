@@ -42,6 +42,15 @@ def list_owned_transactions(status: Optional[str] = Query(default="CONFIRMED"), 
     return {"transactions": db.list_transactions(user.user_id, status)}
 
 
+@router.get("/api/coverage", summary="What the ledger could and could not see")
+def coverage_map(user: AuthenticatedUser = Depends(get_current_user)):
+    from app.services import coverage as coverage_service
+    from app.services import ledger
+
+    aggregate = ledger.read_aggregate(user.user_id)
+    return {"coverage": aggregate.get("coverage", {}), "rates": aggregate.get("rates", {})}
+
+
 @router.get("/api/review-queue", summary="Transactions needing the owner's attention")
 def review_queue(user: AuthenticatedUser = Depends(get_current_user)):
     items = db.list_review_queue(user.user_id)

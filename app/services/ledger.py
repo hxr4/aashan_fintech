@@ -20,6 +20,7 @@ from app.models.transaction import Transaction
 from app.services.aggregator import aggregate_transactions
 from app.services.anomaly import detect_anomalies
 from app.services.budget import budget_status
+from app.services import coverage as coverage_service
 
 
 EMPTY_AGGREGATE: Dict[str, Any] = {
@@ -38,6 +39,8 @@ EMPTY_AGGREGATE: Dict[str, Any] = {
     "anomalies": [],
     "budget_status": [],
     "classification_metadata": [],
+    "coverage": {},
+    "rates": {},
 }
 
 
@@ -124,6 +127,13 @@ def compute_aggregate(
             }
             for transaction in transactions
         ]
+    windows = db.list_coverage(user_id)
+    aggregate["coverage"] = coverage_service.summarize(
+        windows, days_with_transactions=len(aggregate.get("daily", {}))
+    )
+    aggregate["rates"] = coverage_service.rates(
+        aggregate.get("total_spending", 0), aggregate["coverage"]
+    )
     configured = db.get_budgets(user_id) if budgets is None else budgets
     aggregate["budget_status"] = budget_status(
         aggregate.get("budget_categories", aggregate.get("categories", {})), configured

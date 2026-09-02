@@ -68,6 +68,12 @@ def ingest_with_adapter(
         db.update_processing_checkpoint(job_id, user_id, "NORMALIZATION_COMPLETED", progress={"rows": len(normalized)})
         db.update_processing_checkpoint(job_id, user_id, "CLASSIFICATION_STARTED")
 
+        # Record what period this import actually covers, so every rate the
+        # product publishes later can state the days it divided by.
+        if normalized:
+            dates = sorted(entry.transaction_at.date() for entry in normalized)
+            db.record_coverage(user_id, source, dates[0].isoformat(), dates[-1].isoformat(), account_id)
+
         categorized_rows: list[Dict[str, Any]] = []
         for item in normalized:
             transaction = Transaction(

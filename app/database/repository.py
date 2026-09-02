@@ -54,6 +54,8 @@ class Repository(Protocol):
     def update_transaction(self, user_id: str, transaction_id: str, updates: Dict[str, Any]) -> bool: ...
     def list_observations(self, user_id: str, transaction_id: str) -> list[Dict[str, Any]]: ...
     def list_review_queue(self, user_id: str) -> list[Dict[str, Any]]: ...
+    def record_coverage(self, user_id: str, source: str, covered_from: str, covered_to: str, account_id: Optional[str] = None) -> None: ...
+    def list_coverage(self, user_id: str) -> list[Dict[str, Any]]: ...
     def create_review(self, user_id: str, candidate_id: Optional[str], transaction_id: Optional[str], action: str, changes: Dict[str, Any]) -> str: ...
     def create_merchant_rule(self, user_id: str, merchant_pattern: str, category: Optional[str]) -> str: ...
     def list_merchant_rules(self, user_id: str) -> list[Dict[str, Any]]: ...
@@ -496,6 +498,25 @@ class SQLiteRepository:
             queue.append(record)
         return queue
 
+    def record_coverage(self, user_id: str, source: str, covered_from: str, covered_to: str, account_id: Optional[str] = None) -> None:
+        self.initialize()
+        with get_sqlite_connection() as connection:
+            connection.execute(
+                """INSERT OR IGNORE INTO coverage_windows
+                   (id, user_id, account_id, source, covered_from, covered_to)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (_new_id(), user_id, account_id, source, covered_from, covered_to),
+            )
+
+    def list_coverage(self, user_id: str) -> list[Dict[str, Any]]:
+        self.initialize()
+        with get_sqlite_connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM coverage_windows WHERE user_id = ? ORDER BY covered_from",
+                (user_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_observations(self, user_id: str, transaction_id: str) -> list[Dict[str, Any]]:
         self.initialize()
         with get_sqlite_connection() as connection:
@@ -898,6 +919,26 @@ class PostgresRepository:
             record["counted_in_totals"] = record.get("transaction_status") == "CONFIRMED"
             queue.append(record)
         return queue
+
+    def record_coverage(self, user_id: str, source: str, covered_from: str, covered_to: str, account_id: Optional[str] = None) -> None:
+        self.initialize()
+        with self._engine.begin() as connection:
+            self._set_user_context(connection, user_id)
+            connection.execute(self._text("""INSERT INTO coverage_windows
+                (user_id, account_id, source, covered_from, covered_to)
+                VALUES (:user_id, CAST(:account_id AS UUID), :source, CAST(:covered_from AS DATE), CAST(:covered_to AS DATE))
+                ON CONFLICT DO NOTHING"""),
+                {"user_id": user_id, "account_id": account_id, "source": source,
+                 "covered_from": covered_from, "covered_to": covered_to})
+
+    def list_coverage(self, user_id: str) -> list[Dict[str, Any]]:
+        self.initialize()
+        with self._engine.connect() as connection:
+            self._set_user_context(connection, user_id)
+            rows = connection.execute(self._text(
+                "SELECT * FROM coverage_windows WHERE user_id = :user_id ORDER BY covered_from"),
+                {"user_id": user_id}).mappings().all()
+        return [dict(row) for row in rows]
 
     def list_observations(self, user_id: str, transaction_id: str) -> list[Dict[str, Any]]:
         self.initialize()
