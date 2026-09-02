@@ -1,3 +1,32 @@
+# Deploying to Supabase
+
+Order matters, and two things commonly go wrong.
+
+**`:'app_password'` is psql syntax.** The Supabase SQL Editor is not psql, so
+Postgres receives the literal text and raises a syntax error -- which rolls the
+whole script back, creating nothing. Use a literal password.
+
+**`GRANT ... ON ALL TABLES` only covers tables that already exist.** Granting
+before the migrations run grants on an empty schema. Migrate first, then grant.
+
+1. `DATABASE_URL='<admin connection>' .venv/bin/python scripts/migrate.py`
+2. Paste `supabase_role_setup.sql` into the SQL Editor, with a real password
+3. `ADMIN_DATABASE_URL=... APP_DATABASE_URL=... .venv/bin/python scripts/verify_rls.py`
+
+Step 3 is the one that settles it. Everything else is a claim.
+
+## Connecting as a custom role
+
+Prefer the **direct connection** with the plain role name:
+
+    postgresql://aashan_app:<password>@db.<project-ref>.supabase.co:5432/postgres
+
+Supavisor, the pooler, expects `<role>.<project-ref>` as the username and is
+known to answer "Tenant or user not found" for custom roles. If you must use the
+pooler, try `aashan_app.<project-ref>`; if that is refused, use the direct
+connection. Newer projects serve the direct host over IPv6 only, so an IPv4-only
+network may need the pooler or the IPv4 add-on.
+
 # Deploying the application role
 
 RLS only protects you if the application connects as a role that does **not**
