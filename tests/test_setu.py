@@ -8,6 +8,9 @@ from app.main import app
 from app.services.aa_client import build_consent_payload
 from app.services.normalizer import normalize_transaction
 from app.services.setu_mapper import flatten_setu_transactions
+from app.services.webhook_auth import sign
+
+WEBHOOK_SECRET = "setu-test-webhook-secret-0123456789"
 
 
 class FakeResponse:
@@ -85,8 +88,20 @@ def _configure_setu(monkeypatch):
     monkeypatch.setattr(settings, "setu_product_instance_id", "product-instance")
     monkeypatch.setattr(settings, "redirect_url", "https://example.test/api/aa/callback")
     monkeypatch.setattr(settings, "setu_auto_fetch", False)
+    monkeypatch.setattr(settings, "aa_webhook_secret", WEBHOOK_SECRET)
+    monkeypatch.setattr(settings, "aa_webhook_token", "")
     FakeAsyncClient.calls = []
     monkeypatch.setattr("app.services.aa_client.httpx.AsyncClient", FakeAsyncClient)
+
+
+def _post_signed(client, payload):
+    """A real provider signs its callbacks; so do the tests."""
+    body = json.dumps(payload).encode()
+    return client.post(
+        "/api/webhooks/setu",
+        content=body,
+        headers={"Content-Type": "application/json", "X-Aashan-Signature": sign(WEBHOOK_SECRET, body)},
+    )
 
 
 def test_consent_payload_construction():
@@ -189,8 +204,8 @@ def test_setu_session_webhook_creates_canonical_transactions_and_is_idempotent(m
     }
 
     with TestClient(app) as client:
-        first = client.post("/api/webhooks/setu", json=payload)
-        second = client.post("/api/webhooks/setu", json=payload)
+        first = _post_signed(client, payload)
+        second = _post_signed(client, payload)
 
     assert first.status_code == 200
     assert first.json()["processed"] is True
@@ -230,8 +245,8 @@ def test_fi_data_ready_flattens_embedded_payload_and_processes_once(monkeypatch)
         }]}}}}]}],
     }
     with TestClient(app) as client:
-        first = client.post("/api/webhooks/setu", json=payload)
-        second = client.post("/api/webhooks/setu", json=payload)
+        first = _post_signed(client, payload)
+        second = _post_signed(client, payload)
     assert first.status_code == 200
     assert first.json()["processed"] is True
     assert second.json()["duplicate"] is True

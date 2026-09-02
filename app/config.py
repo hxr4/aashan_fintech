@@ -27,6 +27,13 @@ class Settings:
     setu_auto_fetch: bool = False
     redirect_url: str = ""
     webhook_base_url: str = ""
+    aa_webhook_token: str = ""
+    aa_webhook_secret: str = ""
+    webhook_replay_window_seconds: int = 300
+    max_webhook_bytes: int = 1024 * 1024
+    rate_limit_enabled: bool = True
+    trust_proxy_headers: bool = False
+    allowed_hosts: list = field(default_factory=lambda: ["*"])
     database_url: str = "sqlite:///./aashan.db"
     auth_required: bool = False
     supabase_url: str = ""
@@ -58,6 +65,12 @@ class Settings:
             setu_auto_fetch=os.getenv("SETU_AUTO_FETCH", "false").lower() in {"1", "true", "yes", "on"},
             redirect_url=os.getenv("REDIRECT_URL", ""),
             webhook_base_url=os.getenv("WEBHOOK_BASE_URL", ""),
+            aa_webhook_token=os.getenv("AA_WEBHOOK_TOKEN", ""),
+            aa_webhook_secret=os.getenv("AA_WEBHOOK_SECRET", ""),
+            webhook_replay_window_seconds=int(os.getenv("WEBHOOK_REPLAY_WINDOW_SECONDS", "300") or 300),
+            rate_limit_enabled=os.getenv("RATE_LIMIT_ENABLED", "true").lower() in {"1", "true", "yes", "on"},
+            trust_proxy_headers=os.getenv("TRUST_PROXY_HEADERS", "false").lower() in {"1", "true", "yes", "on"},
+            allowed_hosts=[h.strip() for h in os.getenv("ALLOWED_HOSTS", "").split(",") if h.strip()] or ["*"],
             database_url=os.getenv("DATABASE_URL", "sqlite:///./aashan.db"),
             auth_required=os.getenv("AUTH_REQUIRED", "").lower() in {"1", "true", "yes", "on"}
                 or os.getenv("ENVIRONMENT", "development").lower() in {"production", "prod"},

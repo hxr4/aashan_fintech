@@ -1,10 +1,10 @@
 from datetime import datetime
-import inspect
+import json
 import logging
 from typing import Any, Dict, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from app.api.aa import mock_provider
 from app.auth import LOCAL_USER_ID
@@ -18,7 +18,8 @@ from app.database.db import (
     mark_aa_webhook_event,
     update_aa_consent_status,
 )
-from app.services.aa_client import SetuAAProvider, SetuConfigurationError, safe_setu_text
+from app.services.aa_client import SetuAAProvider, SetuConfigurationError, describe_setu_http_error, safe_setu_text
+from app.services import webhook_auth
 from app.services.mock_aa import generate_mock_transactions
 from app.services.pipeline import process_raw_rows
 from app.services.ingestion import SetuAdapter
@@ -94,10 +95,16 @@ async def _fetch_setu_data(provider: SetuAAProvider, session_id: str) -> Dict[st
     try:
         return await provider.fetch_data(session_id)
     except httpx.HTTPStatusError as exc:
-        detail = exc.response.text[:500] if exc.response is not None else str(exc)
-        raise HTTPException(status_code=502, detail="Setu data fetch error: " + detail)
+        # The upstream body can carry account identifiers and tokens; only the
+        # allow-listed diagnostic fields are ever surfaced or logged.
+        description = describe_setu_http_error(exc.response) if exc.response is not None else {}
+        logger.error("provider data fetch failed category=%s http_status=%s",
+                     description.get("category"), description.get("http_status"))
+        raise HTTPException(status_code=502, detail={"error": "provider_fetch_failed",
+                                                     "category": description.get("category", "unknown")})
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail="Setu data fetch failed: " + str(exc))
+        logger.error("provider data fetch network error error_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail={"error": "provider_fetch_failed", "category": "network_error"})
 
 
 async def _create_setu_session(consent_id: str) -> Dict[str, Any]:
@@ -109,10 +116,14 @@ async def _create_setu_session(consent_id: str) -> Dict[str, Any]:
     try:
         return await provider.create_data_session(consent_id, body)
     except httpx.HTTPStatusError as exc:
-        detail = exc.response.text[:500] if exc.response is not None else str(exc)
-        raise HTTPException(status_code=502, detail="Setu session creation error: " + detail)
+        description = describe_setu_http_error(exc.response) if exc.response is not None else {}
+        logger.error("provider session creation failed category=%s http_status=%s",
+                     description.get("category"), description.get("http_status"))
+        raise HTTPException(status_code=502, detail={"error": "provider_session_failed",
+                                                     "category": description.get("category", "unknown")})
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail="Setu session creation failed: " + str(exc))
+        logger.error("provider session creation network error error_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail={"error": "provider_session_failed", "category": "network_error"})
 
 
 def _validate_notification(payload: Dict[str, Any]) -> tuple[str, str]:
@@ -175,8 +186,21 @@ async def _process_setu_transactions(
     }
 
 
-@router.post("/setu", summary="Receive Setu consent and FI session notifications")
-async def setu_webhook(payload: Dict[str, Any]):
+@router.post("/setu", summary="Receive authenticated consent and FI session notifications")
+async def setu_webhook(request: Request):
+    body = await request.body()
+    if len(body) > settings.max_webhook_bytes:
+        raise HTTPException(status_code=413, detail="Webhook payload too large")
+    # Authenticate before parsing: never let an unauthenticated caller reach the
+    # ingestion path, and never spend work on a body we have not vouched for.
+    auth_method = webhook_auth.enforce(request, body)
+    try:
+        payload = json.loads(body or b"{}")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Webhook body is not valid JSON")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Webhook body must be a JSON object")
+    logger.info("webhook authenticated via=%s", auth_method)
     _log_webhook_diagnostics(payload)
     event_type, consent_id = _validate_notification(payload)
     status = _status(payload)

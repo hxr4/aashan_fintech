@@ -30,9 +30,13 @@ PATTERNS = [
     )),
 ]
 
+# Values that are obviously not credentials. A real secret does not announce
+# itself as a fixture, and every test constant in this repo is prefixed so the
+# guard stays meaningful rather than being switched off per file.
 ALLOW = re.compile(
     r"(?i)(your[-_ ]?|example|placeholder|changeme|dummy|xxx+|\.\.\.|<[a-z_]+>|os\.getenv|settings\.|"
-    r"getenv\(|redacted|test-secret|part-2-test-secret)"
+    r"getenv\(|redacted|\btest-[a-z0-9-]*(secret|token|key)|(secret|token|key)[-_]?test\b|"
+    r"fake[-_]?|sample[-_]?|part-2-test-secret)"
 )
 
 

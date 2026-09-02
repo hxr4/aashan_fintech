@@ -1,0 +1,6 @@
+# Optional: semantic fallback categorisation. Large. Not needed to run the API,
+# and deliberately not installed into the API image.
+sentence-transformers==5.1.2
+torch==2.8.0
+transformers==4.57.6
+scikit-learn==1.6.1

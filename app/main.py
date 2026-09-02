@@ -3,6 +3,10 @@ from typing import Any, Dict
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+
+from app.middleware import CorrelationMiddleware, RateLimitMiddleware, SecurityHeadersMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -31,13 +35,33 @@ app = FastAPI(
     description="Privacy-first personal finance backend with Goldfish Memory.",
     version="0.1.0",
 )
+IS_PRODUCTION = settings.environment.lower() in {"production", "prod"}
+
+# Middleware runs in reverse registration order, so the outermost concern is
+# registered last: correlation wraps everything, then rate limiting rejects
+# before any handler work, then headers are stamped on the way out.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    # Narrowed from the previous wildcards: the API takes JSON and uploads, and
+    # a wildcard method list is an invitation nobody needs to accept.
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-Id"],
+    expose_headers=["X-Request-Id", "X-RateLimit-Limit", "X-RateLimit-Remaining", "Retry-After"],
+    max_age=600,
 )
+app.add_middleware(SecurityHeadersMiddleware, production=IS_PRODUCTION)
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(CorrelationMiddleware)
+
+if IS_PRODUCTION:
+    # Financial data never travels in the clear, and the app only answers to
+    # the hostnames it was deployed under.
+    app.add_middleware(HTTPSRedirectMiddleware)
+    if settings.allowed_hosts != ["*"]:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+
 app.include_router(health_router)
 app.include_router(aa_router)
 app.include_router(auth_router)
