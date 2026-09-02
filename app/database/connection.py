@@ -75,6 +75,7 @@ def _ensure_sqlite_compatibility(connection: sqlite3.Connection) -> None:
         add_column(table, "transfer_status TEXT NOT NULL DEFAULT 'NOT_TRANSFER'")
         add_column(table, "budget_status TEXT NOT NULL DEFAULT 'UNDECIDED'")
         add_column(table, "external_id TEXT")
+        add_column(table, "content_hash TEXT")
     if columns("merchant_rules"):
         add_column("merchant_rules", "category_name TEXT")
 

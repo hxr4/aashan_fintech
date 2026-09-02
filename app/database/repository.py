@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional, Protocol
 from app.config import settings
 from app.database.connection import get_sqlite_connection
 from app.models.ingestion import NormalizedTransactionInput
+from app.services.matching import DEFAULT_WINDOW_DAYS, content_hash
 
 
 LOCAL_USER_ID = "00000000-0000-0000-0000-000000000001"
@@ -51,6 +52,7 @@ class Repository(Protocol):
     def get_transaction(self, user_id: str, transaction_id: str) -> Optional[Dict[str, Any]]: ...
     def list_transactions(self, user_id: str, transaction_status: Optional[str] = "CONFIRMED") -> list[Dict[str, Any]]: ...
     def update_transaction(self, user_id: str, transaction_id: str, updates: Dict[str, Any]) -> bool: ...
+    def list_observations(self, user_id: str, transaction_id: str) -> list[Dict[str, Any]]: ...
     def create_review(self, user_id: str, candidate_id: Optional[str], transaction_id: Optional[str], action: str, changes: Dict[str, Any]) -> str: ...
     def create_merchant_rule(self, user_id: str, merchant_pattern: str, category: Optional[str]) -> str: ...
     def list_merchant_rules(self, user_id: str) -> list[Dict[str, Any]]: ...
@@ -334,16 +336,81 @@ class SQLiteRepository:
             )
         return cursor.rowcount == 1
 
+    def _record_observation(self, connection, user_id: str, transaction_id: Optional[str], import_id: Optional[str], candidate_id: Optional[str], item: NormalizedTransactionInput, match_method: str, match_score: Optional[float]) -> str:
+        observation_id = _new_id()
+        connection.execute(
+            """INSERT INTO source_observations
+               (id, user_id, transaction_id, candidate_id, import_id, source, external_id,
+                source_record_id, transaction_at, amount, currency, direction, description,
+                mode, match_method, match_score)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (observation_id, user_id, transaction_id, candidate_id, import_id, item.source_type,
+             item.external_id, item.source_record_id, item.transaction_at.isoformat(), item.amount,
+             item.currency, item.direction, item.description, item.mode, match_method, match_score),
+        )
+        return observation_id
+
+    def _find_matching_transaction(self, connection, user_id: str, item: NormalizedTransactionInput, digest: str):
+        """Identity is the real-world event, never the pipe it arrived through."""
+        open_states = ("CONFIRMED", "PENDING_REVIEW")
+
+        # 1. A strong external reference, matched across sources rather than within one.
+        if item.external_id:
+            row = connection.execute(
+                "SELECT id FROM transactions WHERE user_id = ? AND external_id = ? AND transaction_status IN (?, ?)",
+                (user_id, item.external_id, *open_states),
+            ).fetchone()
+            if row:
+                return row["id"], "EXTERNAL_ID", 1.0
+
+        # 2. Byte-for-byte the same event: re-uploaded file, overlapping statement.
+        row = connection.execute(
+            "SELECT id FROM transactions WHERE user_id = ? AND content_hash = ? AND transaction_status IN (?, ?)",
+            (user_id, digest, *open_states),
+        ).fetchone()
+        if row:
+            return row["id"], "CONTENT_HASH", 1.0
+
+        # 3. Same amount and direction a few days apart, from a source this
+        #    transaction has not been seen by. Two identical amounts from the
+        #    same source are two real purchases, so that case is excluded.
+        rows = connection.execute(
+            """SELECT t.id FROM transactions t
+               WHERE t.user_id = ?
+                 AND t.direction = ?
+                 AND ABS(t.amount - ?) < 0.005
+                 AND t.transaction_status IN (?, ?)
+                 AND (t.account_id IS ? OR t.account_id IS NULL OR ? IS NULL)
+                 AND ABS(julianday(t.transaction_at) - julianday(?)) <= ?
+                 AND NOT EXISTS (
+                     SELECT 1 FROM source_observations o
+                     WHERE o.transaction_id = t.id AND o.source = ?
+                 )""",
+            (user_id, item.direction, item.amount, *open_states, item.account_id, item.account_id,
+             item.transaction_at.isoformat(), DEFAULT_WINDOW_DAYS, item.source_type),
+        ).fetchall()
+        # More than one plausible partner is ambiguous; never guess at money.
+        if len(rows) == 1:
+            return rows[0]["id"], "CROSS_SOURCE_WINDOW", 0.9
+        return None, "NEW", None
+
     def create_transaction(self, user_id: str, import_id: str, candidate_id: str, item: NormalizedTransactionInput, category: Optional[str], classification_method: Optional[str], classification_confidence: Optional[float], classification_status: str = "AUTO_CLASSIFIED", transaction_status: str = "CONFIRMED", budget_status: str = "INCLUDED", transfer_status: str = "NOT_TRANSFER", duplicate_status: str = "NOT_DUPLICATE") -> Dict[str, Any]:
         self.initialize()
+        digest = content_hash(user_id, item.account_id, item.transaction_at, item.direction, item.amount, item.description)
         with get_sqlite_connection() as connection:
-            if item.external_id:
-                existing = connection.execute(
-                    "SELECT id FROM transactions WHERE user_id = ? AND source = ? AND external_id = ?",
-                    (user_id, item.source_type, item.external_id),
-                ).fetchone()
-                if existing:
-                    return {"created": False, "duplicate": True, "possible_duplicate": False, "id": existing["id"]}
+            existing_id, method, score = self._find_matching_transaction(connection, user_id, item, digest)
+            if existing_id:
+                # Deduplication attaches a witness rather than discarding the row.
+                self._record_observation(connection, user_id, existing_id, import_id, candidate_id, item, method, score)
+                return {
+                    "created": False,
+                    "duplicate": True,
+                    "matched": True,
+                    "match_method": method,
+                    "cross_source": method == "CROSS_SOURCE_WINDOW",
+                    "possible_duplicate": False,
+                    "id": existing_id,
+                }
             transaction_id = _new_id()
             connection.execute(
                 """INSERT INTO transactions
@@ -352,16 +419,26 @@ class SQLiteRepository:
                     description, mode, merchant_candidate, merchant_confidence, category_name,
                     classification_method, classification_confidence, classification_status,
                     status, transaction_status, budget_inclusion, budget_status, transfer_status,
-                    duplicate_status, is_transfer)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    duplicate_status, is_transfer, content_hash)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (transaction_id, user_id, item.account_id, import_id, item.source_type, item.source_record_id, item.external_id,
                  item.transaction_at.isoformat(), item.value_date.isoformat() if item.value_date else None,
                  item.amount, item.currency, item.direction, item.transaction_type, item.description,
                  item.mode, item.merchant_candidate, item.merchant_confidence, category, classification_method,
                  classification_confidence, classification_status, transaction_status, transaction_status,
-                 budget_status, budget_status, transfer_status, duplicate_status, transfer_status == "CONFIRMED"),
+                 budget_status, budget_status, transfer_status, duplicate_status, transfer_status == "CONFIRMED", digest),
             )
-        return {"created": True, "duplicate": False, "possible_duplicate": False, "id": transaction_id}
+            self._record_observation(connection, user_id, transaction_id, import_id, candidate_id, item, "NEW", 1.0)
+        return {"created": True, "duplicate": False, "matched": False, "match_method": "NEW", "cross_source": False, "possible_duplicate": False, "id": transaction_id}
+
+    def list_observations(self, user_id: str, transaction_id: str) -> list[Dict[str, Any]]:
+        self.initialize()
+        with get_sqlite_connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM source_observations WHERE user_id = ? AND transaction_id = ? ORDER BY observed_at",
+                (user_id, transaction_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_transaction(self, user_id: str, transaction_id: str) -> Optional[Dict[str, Any]]:
         self.initialize()
@@ -655,26 +732,91 @@ class PostgresRepository:
             result = connection.execute(self._text("UPDATE transaction_candidates SET review_status = :review_status, transaction_status = :transaction_status, classification_status = COALESCE(:classification_status, classification_status), updated_at = now() WHERE id = :id AND user_id = :user_id"), {"review_status": review_status, "transaction_status": transaction_status, "classification_status": classification_status, "id": candidate_id, "user_id": user_id})
         return result.rowcount == 1
 
+    def _record_observation(self, connection, user_id: str, transaction_id: Optional[str], import_id: Optional[str], candidate_id: Optional[str], item: NormalizedTransactionInput, match_method: str, match_score: Optional[float]) -> None:
+        connection.execute(self._text("""INSERT INTO source_observations
+            (user_id, transaction_id, candidate_id, import_id, source, external_id, source_record_id,
+             transaction_at, amount, currency, direction, description, mode, match_method, match_score)
+            VALUES (:user_id, :transaction_id, :candidate_id, :import_id, :source, :external_id, :source_record_id,
+             :transaction_at, :amount, :currency, :direction, :description, :mode, :match_method, :match_score)"""),
+            {"user_id": user_id, "transaction_id": transaction_id, "candidate_id": candidate_id,
+             "import_id": import_id, "source": item.source_type, "external_id": item.external_id,
+             "source_record_id": item.source_record_id, "transaction_at": item.transaction_at,
+             "amount": item.amount, "currency": item.currency, "direction": item.direction,
+             "description": item.description, "mode": item.mode,
+             "match_method": match_method, "match_score": match_score})
+
+    def _find_matching_transaction(self, connection, user_id: str, item: NormalizedTransactionInput, digest: str):
+        """Mirrors the SQLite rules: event identity, never the pipe it came through."""
+        base = {"user_id": user_id}
+        if item.external_id:
+            row = connection.execute(self._text(
+                "SELECT id FROM transactions WHERE user_id = :user_id AND external_id = :external_id"
+                " AND transaction_status IN ('CONFIRMED', 'PENDING_REVIEW')"),
+                {**base, "external_id": item.external_id}).mappings().first()
+            if row:
+                return str(row["id"]), "EXTERNAL_ID", 1.0
+
+        row = connection.execute(self._text(
+            "SELECT id FROM transactions WHERE user_id = :user_id AND content_hash = :digest"
+            " AND transaction_status IN ('CONFIRMED', 'PENDING_REVIEW')"),
+            {**base, "digest": digest}).mappings().first()
+        if row:
+            return str(row["id"]), "CONTENT_HASH", 1.0
+
+        rows = connection.execute(self._text("""
+            SELECT t.id FROM transactions t
+            WHERE t.user_id = :user_id
+              AND t.direction = :direction
+              AND ABS(t.amount - :amount) < 0.005
+              AND t.transaction_status IN ('CONFIRMED', 'PENDING_REVIEW')
+              AND (t.account_id IS NOT DISTINCT FROM CAST(:account_id AS UUID)
+                   OR t.account_id IS NULL OR CAST(:account_id AS UUID) IS NULL)
+              AND ABS(EXTRACT(EPOCH FROM (t.transaction_at - CAST(:transaction_at AS timestamptz)))) <= :window_seconds
+              AND NOT EXISTS (
+                  SELECT 1 FROM source_observations o
+                  WHERE o.transaction_id = t.id AND o.source = :source
+              )"""),
+            {**base, "direction": item.direction, "amount": item.amount,
+             "account_id": item.account_id, "transaction_at": item.transaction_at,
+             "window_seconds": DEFAULT_WINDOW_DAYS * 86400, "source": item.source_type}).mappings().all()
+        if len(rows) == 1:
+            return str(rows[0]["id"]), "CROSS_SOURCE_WINDOW", 0.9
+        return None, "NEW", None
+
     def create_transaction(self, user_id: str, import_id: str, candidate_id: str, item: NormalizedTransactionInput, category: Optional[str], classification_method: Optional[str], classification_confidence: Optional[float], classification_status: str = "AUTO_CLASSIFIED", transaction_status: str = "CONFIRMED", budget_status: str = "INCLUDED", transfer_status: str = "NOT_TRANSFER", duplicate_status: str = "NOT_DUPLICATE") -> Dict[str, Any]:
         self.initialize()
-        params = {**self._canonical_params(item), "user_id": user_id, "import_id": import_id, "candidate_id": candidate_id, "category": category, "classification_method": classification_method, "classification_confidence": classification_confidence, "classification_status": classification_status, "transaction_status": transaction_status, "budget_status": budget_status, "transfer_status": transfer_status, "duplicate_status": duplicate_status}
+        digest = content_hash(user_id, item.account_id, item.transaction_at, item.direction, item.amount, item.description)
+        params = {**self._canonical_params(item), "user_id": user_id, "import_id": import_id, "candidate_id": candidate_id, "category": category, "classification_method": classification_method, "classification_confidence": classification_confidence, "classification_status": classification_status, "transaction_status": transaction_status, "budget_status": budget_status, "transfer_status": transfer_status, "duplicate_status": duplicate_status, "content_hash": digest}
         with self._engine.begin() as connection:
             self._set_user_context(connection, user_id)
-            if item.external_id:
-                existing = connection.execute(self._text("SELECT id FROM transactions WHERE user_id = :user_id AND source = :source AND external_id = :external_id"), {"user_id": user_id, "source": item.source_type, "external_id": item.external_id}).mappings().first()
-                if existing:
-                    return {"created": False, "duplicate": True, "possible_duplicate": False, "id": str(existing["id"])}
+            existing_id, method, score = self._find_matching_transaction(connection, user_id, item, digest)
+            if existing_id:
+                self._record_observation(connection, user_id, existing_id, import_id, candidate_id, item, method, score)
+                return {"created": False, "duplicate": True, "matched": True, "match_method": method,
+                        "cross_source": method == "CROSS_SOURCE_WINDOW", "possible_duplicate": False, "id": existing_id}
             row = connection.execute(self._text("""INSERT INTO transactions
                 (user_id, account_id, import_id, source, source_record_id, external_id, transaction_at, value_date,
                  amount, currency, direction, transaction_type, description, mode, merchant_candidate, merchant_confidence,
                  category_name, classification_method, classification_confidence, classification_status, status,
-                 transaction_status, budget_inclusion, budget_status, transfer_status, duplicate_status, is_transfer)
+                 transaction_status, budget_inclusion, budget_status, transfer_status, duplicate_status, is_transfer, content_hash)
                 VALUES (:user_id, :account_id, :import_id, :source, :source_record_id, :external_id, :transaction_at, :value_date,
                  :amount, :currency, :direction, :transaction_type, :description, :mode, :merchant_candidate, :merchant_confidence,
                  :category, :classification_method, :classification_confidence, :classification_status, :transaction_status,
-                 :transaction_status, :budget_status, :budget_status, :transfer_status, :duplicate_status, :is_transfer)
-                RETURNING id"""), {**params, "is_transfer": transfer_status == "CONFIRMED"}).mappings().first()
-        return {"created": True, "duplicate": False, "possible_duplicate": False, "id": str(row["id"])}
+                 :transaction_status, :budget_status, :budget_status, :transfer_status, :duplicate_status,
+                 :transfer_status = 'CONFIRMED', :content_hash)
+                RETURNING id"""), params).mappings().first()
+            transaction_id = str(row["id"])
+            self._record_observation(connection, user_id, transaction_id, import_id, candidate_id, item, "NEW", 1.0)
+        return {"created": True, "duplicate": False, "matched": False, "match_method": "NEW", "cross_source": False, "possible_duplicate": False, "id": transaction_id}
+
+    def list_observations(self, user_id: str, transaction_id: str) -> list[Dict[str, Any]]:
+        self.initialize()
+        with self._engine.connect() as connection:
+            self._set_user_context(connection, user_id)
+            rows = connection.execute(self._text(
+                "SELECT * FROM source_observations WHERE user_id = :user_id AND transaction_id = :transaction_id ORDER BY observed_at"),
+                {"user_id": user_id, "transaction_id": transaction_id}).mappings().all()
+        return [dict(row) for row in rows]
 
     def get_transaction(self, user_id: str, transaction_id: str) -> Optional[Dict[str, Any]]:
         self.initialize()

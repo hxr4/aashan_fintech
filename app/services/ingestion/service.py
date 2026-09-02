@@ -53,13 +53,14 @@ def ingest_with_adapter(
             "rows_confirmed": 0,
             "duplicates": 0,
             "candidates_pending_review": 0,
+            "reconciled": 0,
             "rows_processed": import_record.get("row_count", 0),
             "aggregate": ledger.read_aggregate(user_id),
         })
 
     import_id = import_record["id"]
     job_id = db.create_processing_job(user_id, import_id, f"{source}_INGESTION")
-    counts = {"rows_received": 0, "rows_confirmed": 0, "duplicates": 0, "candidates_pending_review": 0}
+    counts = {"rows_received": 0, "rows_confirmed": 0, "duplicates": 0, "reconciled": 0, "candidates_pending_review": 0}
     try:
         db.update_processing_checkpoint(job_id, user_id, "SOURCE_VALIDATED", progress={"source": source})
         normalized = list(adapter.extract(source_input))
@@ -120,8 +121,13 @@ def ingest_with_adapter(
                 transfer_status=transfer_status,
             )
             if created.get("duplicate"):
-                counts["duplicates"] += 1
-                db.update_candidate(user_id, candidate_id, "DUPLICATE", "DUPLICATE", "AMBIGUOUS")
+                # A cross-source match is a second witness to a transaction we
+                # already hold, not a duplicate the user needs to worry about.
+                if created.get("cross_source"):
+                    counts["reconciled"] += 1
+                else:
+                    counts["duplicates"] += 1
+                db.update_candidate(user_id, candidate_id, "DUPLICATE", "DUPLICATE", classification_status)
                 continue
             counts["rows_confirmed"] += 1
             categorized_rows.append({
