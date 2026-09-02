@@ -135,6 +135,101 @@ def run_sqlite_migrations() -> None:
         _ensure_sqlite_compatibility(connection)
 
 
+def split_sql(script: str) -> list[str]:
+    """Split a migration into statements without cutting through quoted text.
+
+    Splitting naively on ";" breaks the moment a migration contains a DO block,
+    a function body, or a semicolon inside a string literal -- it would send
+    half a statement to the server and fail in a way that looks like a syntax
+    error in hand-written SQL.
+    """
+    statements: list[str] = []
+    buffer: list[str] = []
+    index = 0
+    length = len(script)
+    in_single = False
+    in_line_comment = False
+    in_block_comment = False
+    dollar_tag: Optional[str] = None
+
+    while index < length:
+        char = script[index]
+        pair = script[index:index + 2]
+
+        if in_line_comment:
+            buffer.append(char)
+            if char == "\n":
+                in_line_comment = False
+            index += 1
+            continue
+        if in_block_comment:
+            buffer.append(char)
+            if pair == "*/":
+                buffer.append(script[index + 1])
+                in_block_comment = False
+                index += 2
+                continue
+            index += 1
+            continue
+        if dollar_tag:
+            buffer.append(char)
+            if script.startswith(dollar_tag, index):
+                buffer.append(script[index + 1:index + len(dollar_tag)])
+                index += len(dollar_tag)
+                dollar_tag = None
+                continue
+            index += 1
+            continue
+        if in_single:
+            buffer.append(char)
+            if char == "'":
+                if script[index + 1:index + 2] == "'":
+                    buffer.append("'")
+                    index += 2
+                    continue
+                in_single = False
+            index += 1
+            continue
+
+        if pair == "--":
+            in_line_comment = True
+            buffer.append(char)
+            index += 1
+            continue
+        if pair == "/*":
+            in_block_comment = True
+            buffer.append(char)
+            index += 1
+            continue
+        if char == "'":
+            in_single = True
+            buffer.append(char)
+            index += 1
+            continue
+        if char == "$":
+            closing = script.find("$", index + 1)
+            if closing != -1 and script[index + 1:closing].replace("_", "").isalnum() or (closing == index + 1):
+                dollar_tag = script[index:closing + 1]
+                buffer.append(dollar_tag)
+                index = closing + 1
+                continue
+        if char == ";":
+            statement = "".join(buffer).strip()
+            if statement:
+                statements.append(statement)
+            buffer = []
+            index += 1
+            continue
+
+        buffer.append(char)
+        index += 1
+
+    tail = "".join(buffer).strip()
+    if tail:
+        statements.append(tail)
+    return statements
+
+
 def run_postgres_migrations() -> None:
     """Apply versioned PostgreSQL migrations through SQLAlchemy.
 
@@ -161,10 +256,8 @@ def run_postgres_migrations() -> None:
             ).fetchone()
             if applied:
                 continue
-            for statement in migration.read_text(encoding="utf-8").split(";"):
-                statement = statement.strip()
-                if statement:
-                    connection.exec_driver_sql(statement)
+            for statement in split_sql(migration.read_text(encoding="utf-8")):
+                connection.exec_driver_sql(statement)
             connection.execute(
                 text("INSERT INTO schema_migrations (version) VALUES (:version)"),
                 {"version": version},

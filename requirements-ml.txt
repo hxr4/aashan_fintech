@@ -1,6 +1,20 @@
-# Optional: semantic fallback categorisation. Large. Not needed to run the API,
-# and deliberately not installed into the API image.
+# OPTIONAL: semantic fallback categorisation. Large, and deliberately NOT
+# installed by run.sh or into the API image.
+#
+# This is exactly why the split exists. Audited 2026-09-02, the previous pins
+# carried 12 advisories between them -- 8 in torch, 4 in transformers -- in a
+# ~2GB dependency tree. None of that belongs in the same process that is about
+# to parse attacker-supplied PDF files in Part 3.
+#
+# Pins below are raised to the advisory fix versions. UNVERIFIED: the suite runs
+# with AASHAN_ENABLE_EMBEDDINGS=false and the classifier degrades gracefully when
+# the model is absent, so these were bumped from the advisory data rather than by
+# installing and exercising them. Run the suite with embeddings enabled before
+# trusting this set in a deployment.
+#
+# Re-run: python -m pip_audit -r requirements-ml.txt
+
 sentence-transformers==5.1.2
-torch==2.8.0
-transformers==4.57.6
+torch>=2.13.0
+transformers>=5.10.0
 scikit-learn==1.6.1

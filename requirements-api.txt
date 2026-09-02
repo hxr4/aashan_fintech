@@ -1,17 +1,26 @@
-# Everything the API needs to run. The embedding classifier is optional and
-# lazily loaded, so torch/transformers stay out of the process that will parse
-# hostile PDFs. Install requirements-ml.txt separately if you want semantic
-# categorisation locally.
-fastapi==0.128.8
-uvicorn==0.39.0
-starlette==0.49.3
-pydantic==2.13.4
-pydantic-settings==2.11.0
-python-multipart==0.0.20
-python-dotenv==1.2.1
+# Everything the API needs to run, and nothing else.
+#
+# The embedding classifier is optional and lazily loaded, so torch and
+# transformers stay out of the process that will parse hostile PDFs -- install
+# requirements-ml.txt separately if you want semantic categorisation locally.
+#
+# Versions below are the ones the suite is verified against, chosen to clear
+# the advisories pip-audit reported on 2026-09-02:
+#   starlette        0.49.3  -> 1.6.0    (5 advisories)
+#   python-multipart 0.0.20  -> 0.0.32   (6 advisories, and it parses uploads)
+#   python-dotenv    1.2.1   -> 1.2.2
+#   pytest           8.4.2   -> 9.1.1
+# Re-run: python -m pip_audit -r requirements-api.txt
+
+fastapi==0.141.1
+starlette==1.6.0
+uvicorn==0.52.4
+pydantic==2.13.5
+python-multipart==0.0.32
+python-dotenv==1.2.2
 httpx==0.28.1
-PyJWT[crypto]>=2.8.0
+PyJWT[crypto]>=2.10.1
 SQLAlchemy==2.0.52
-psycopg[binary]>=3.2.0
-numpy>=1.26
-pytest==8.4.2
+psycopg[binary]==3.3.5
+numpy==2.2.6
+pytest==9.1.1
