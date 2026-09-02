@@ -90,7 +90,12 @@ def ingest_with_adapter(
             category = classification["category"]
             classification_method = classification["classification_method"]
             confidence = classification["confidence"]
+            # Two different kinds of uncertainty, deliberately not conflated.
+            # Not knowing the *category* is not a reason to withhold the amount
+            # from the user's totals -- the money definitely left the account.
+            # Only uncertainty about the transaction itself does that.
             classification_status = "AMBIGUOUS" if classification_method == "fallback" else "AUTO_CLASSIFIED"
+            needs_category = classification_status == "AMBIGUOUS"
             is_transfer = item.direction == "TRANSFER"
             budget_status = "EXCLUDED" if is_transfer else "INCLUDED"
             transfer_status = "CONFIRMED" if is_transfer else "NOT_TRANSFER"
@@ -102,7 +107,7 @@ def ingest_with_adapter(
                 classification_method,
                 confidence,
                 classification_status=classification_status,
-                review_status="CONFIRMED",
+                review_status="PENDING_REVIEW" if needs_category else "CONFIRMED",
                 transaction_status="CONFIRMED",
                 budget_status=budget_status,
                 transfer_status=transfer_status,
@@ -129,7 +134,14 @@ def ingest_with_adapter(
                     counts["duplicates"] += 1
                 db.update_candidate(user_id, candidate_id, "DUPLICATE", "DUPLICATE", classification_status)
                 continue
+            if created.get("possible_duplicate"):
+                # Held out of the totals until a human decides.
+                counts["candidates_pending_review"] += 1
+                db.update_candidate(user_id, candidate_id, "PENDING_REVIEW", "PENDING_REVIEW", classification_status)
+                continue
             counts["rows_confirmed"] += 1
+            if needs_category:
+                counts["candidates_pending_review"] += 1
             categorized_rows.append({
                 "date": item.transaction_at.isoformat(),
                 "description": item.description,

@@ -42,6 +42,23 @@ def list_owned_transactions(status: Optional[str] = Query(default="CONFIRMED"), 
     return {"transactions": db.list_transactions(user.user_id, status)}
 
 
+@router.get("/api/review-queue", summary="Transactions needing the owner's attention")
+def review_queue(user: AuthenticatedUser = Depends(get_current_user)):
+    items = db.list_review_queue(user.user_id)
+    return {
+        "needs_decision": [i for i in items if not i["counted_in_totals"]],
+        "needs_category": [i for i in items if i["counted_in_totals"]],
+        "total": len(items),
+    }
+
+
+@router.get("/api/transactions/{transaction_id}/observations", summary="Which sources saw this transaction")
+def transaction_observations(transaction_id: str, user: AuthenticatedUser = Depends(get_current_user)):
+    if not db.get_transaction(user.user_id, transaction_id):
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    return {"transaction_id": transaction_id, "observations": db.list_observations(user.user_id, transaction_id)}
+
+
 @router.post("/api/transactions/{transaction_id}/review", summary="Review one owned transaction")
 def review_owned_transaction(transaction_id: str, request: TransactionReviewRequest, user: AuthenticatedUser = Depends(get_current_user)):
     result = review_transaction(user.user_id, transaction_id, request)

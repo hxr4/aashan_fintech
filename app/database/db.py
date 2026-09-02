@@ -122,6 +122,10 @@ def list_observations(user_id: str, transaction_id: str) -> list[Dict[str, Any]]
     return get_repository().list_observations(user_id, transaction_id)
 
 
+def list_review_queue(user_id: str) -> list[Dict[str, Any]]:
+    return get_repository().list_review_queue(user_id)
+
+
 def create_review(user_id: str, candidate_id: Optional[str], transaction_id: Optional[str], action: str, changes: Dict[str, Any]) -> str:
     return get_repository().create_review(user_id, candidate_id, transaction_id, action, changes)
 

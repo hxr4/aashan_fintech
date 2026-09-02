@@ -53,6 +53,7 @@ class Repository(Protocol):
     def list_transactions(self, user_id: str, transaction_status: Optional[str] = "CONFIRMED") -> list[Dict[str, Any]]: ...
     def update_transaction(self, user_id: str, transaction_id: str, updates: Dict[str, Any]) -> bool: ...
     def list_observations(self, user_id: str, transaction_id: str) -> list[Dict[str, Any]]: ...
+    def list_review_queue(self, user_id: str) -> list[Dict[str, Any]]: ...
     def create_review(self, user_id: str, candidate_id: Optional[str], transaction_id: Optional[str], action: str, changes: Dict[str, Any]) -> str: ...
     def create_merchant_rule(self, user_id: str, merchant_pattern: str, category: Optional[str]) -> str: ...
     def list_merchant_rules(self, user_id: str) -> list[Dict[str, Any]]: ...
@@ -394,6 +395,31 @@ class SQLiteRepository:
             return rows[0]["id"], "CROSS_SOURCE_WINDOW", 0.9
         return None, "NEW", None
 
+    def _find_possible_duplicate(self, connection, user_id: str, item: NormalizedTransactionInput) -> Optional[str]:
+        """A near-miss on amount is a question for a human, not an auto-merge.
+
+        A fuel pre-authorisation settles at a different figure than it reserved;
+        a card tip lands later. Same account, same direction, a few days apart,
+        a different source, and an amount that is close but not equal is exactly
+        that case -- so it becomes reviewable rather than a second purchase.
+        """
+        rows = connection.execute(
+            """SELECT t.id, t.amount FROM transactions t
+               WHERE t.user_id = ?
+                 AND t.direction = ?
+                 AND t.transaction_status IN ('CONFIRMED', 'PENDING_REVIEW')
+                 AND ABS(t.amount - ?) >= 0.005
+                 AND ABS(t.amount - ?) <= ? * 0.2
+                 AND ABS(julianday(t.transaction_at) - julianday(?)) <= ?
+                 AND NOT EXISTS (
+                     SELECT 1 FROM source_observations o
+                     WHERE o.transaction_id = t.id AND o.source = ?
+                 )""",
+            (user_id, item.direction, item.amount, item.amount, item.amount,
+             item.transaction_at.isoformat(), DEFAULT_WINDOW_DAYS, item.source_type),
+        ).fetchall()
+        return rows[0]["id"] if len(rows) == 1 else None
+
     def create_transaction(self, user_id: str, import_id: str, candidate_id: str, item: NormalizedTransactionInput, category: Optional[str], classification_method: Optional[str], classification_confidence: Optional[float], classification_status: str = "AUTO_CLASSIFIED", transaction_status: str = "CONFIRMED", budget_status: str = "INCLUDED", transfer_status: str = "NOT_TRANSFER", duplicate_status: str = "NOT_DUPLICATE") -> Dict[str, Any]:
         self.initialize()
         digest = content_hash(user_id, item.account_id, item.transaction_at, item.direction, item.amount, item.description)
@@ -411,6 +437,12 @@ class SQLiteRepository:
                     "possible_duplicate": False,
                     "id": existing_id,
                 }
+            possible_partner = self._find_possible_duplicate(connection, user_id, item)
+            if possible_partner:
+                # Money is never silently invented or merged on a near miss.
+                transaction_status = "PENDING_REVIEW"
+                duplicate_status = "POSSIBLE_DUPLICATE"
+                budget_status = "UNDECIDED"
             transaction_id = _new_id()
             connection.execute(
                 """INSERT INTO transactions
@@ -429,7 +461,40 @@ class SQLiteRepository:
                  budget_status, budget_status, transfer_status, duplicate_status, transfer_status == "CONFIRMED", digest),
             )
             self._record_observation(connection, user_id, transaction_id, import_id, candidate_id, item, "NEW", 1.0)
-        return {"created": True, "duplicate": False, "matched": False, "match_method": "NEW", "cross_source": False, "possible_duplicate": False, "id": transaction_id}
+        return {"created": True, "duplicate": False, "matched": False, "match_method": "NEW",
+                "cross_source": False, "possible_duplicate": bool(possible_partner),
+                "possible_duplicate_of": possible_partner, "transaction_status": transaction_status,
+                "id": transaction_id}
+
+    def list_review_queue(self, user_id: str) -> list[Dict[str, Any]]:
+        """Two lanes, deliberately separate.
+
+        `needs_decision` withholds money from the totals until a human answers.
+        `needs_category` has already been counted -- the amount is certain, only
+        the label is not -- so it never understates spending.
+        """
+        self.initialize()
+        with get_sqlite_connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM transactions
+                   WHERE user_id = ?
+                     AND (transaction_status = 'PENDING_REVIEW'
+                          OR duplicate_status = 'POSSIBLE_DUPLICATE'
+                          OR classification_status = 'AMBIGUOUS')
+                   ORDER BY transaction_at DESC""",
+                (user_id,),
+            ).fetchall()
+        queue = []
+        for row in rows:
+            record = dict(row)
+            record["review_reason"] = (
+                "POSSIBLE_DUPLICATE" if record.get("duplicate_status") == "POSSIBLE_DUPLICATE"
+                else "UNCONFIRMED" if record.get("transaction_status") == "PENDING_REVIEW"
+                else "NEEDS_CATEGORY"
+            )
+            record["counted_in_totals"] = record.get("transaction_status") == "CONFIRMED"
+            queue.append(record)
+        return queue
 
     def list_observations(self, user_id: str, transaction_id: str) -> list[Dict[str, Any]]:
         self.initialize()
@@ -807,7 +872,32 @@ class PostgresRepository:
                 RETURNING id"""), params).mappings().first()
             transaction_id = str(row["id"])
             self._record_observation(connection, user_id, transaction_id, import_id, candidate_id, item, "NEW", 1.0)
-        return {"created": True, "duplicate": False, "matched": False, "match_method": "NEW", "cross_source": False, "possible_duplicate": False, "id": transaction_id}
+        return {"created": True, "duplicate": False, "matched": False, "match_method": "NEW",
+                "cross_source": False, "possible_duplicate": bool(possible_partner),
+                "possible_duplicate_of": possible_partner, "transaction_status": transaction_status,
+                "id": transaction_id}
+
+    def list_review_queue(self, user_id: str) -> list[Dict[str, Any]]:
+        self.initialize()
+        with self._engine.connect() as connection:
+            self._set_user_context(connection, user_id)
+            rows = connection.execute(self._text("""SELECT * FROM transactions
+                WHERE user_id = :user_id
+                  AND (transaction_status = 'PENDING_REVIEW'
+                       OR duplicate_status = 'POSSIBLE_DUPLICATE'
+                       OR classification_status = 'AMBIGUOUS')
+                ORDER BY transaction_at DESC"""), {"user_id": user_id}).mappings().all()
+        queue = []
+        for row in rows:
+            record = dict(row)
+            record["review_reason"] = (
+                "POSSIBLE_DUPLICATE" if record.get("duplicate_status") == "POSSIBLE_DUPLICATE"
+                else "UNCONFIRMED" if record.get("transaction_status") == "PENDING_REVIEW"
+                else "NEEDS_CATEGORY"
+            )
+            record["counted_in_totals"] = record.get("transaction_status") == "CONFIRMED"
+            queue.append(record)
+        return queue
 
     def list_observations(self, user_id: str, transaction_id: str) -> list[Dict[str, Any]]:
         self.initialize()
