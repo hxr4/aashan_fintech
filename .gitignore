@@ -1,0 +1,38 @@
+# secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+.secrets/
+
+# python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# local databases
+*.db
+*.sqlite
+*.sqlite3
+aashan.db
+test_aashan.db
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# build + scratch
+dist/
+build/
+.coverage
+htmlcov/

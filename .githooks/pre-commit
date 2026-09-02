@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Block real env files. .env.example is the documented template and is allowed.
+staged_env="$(git diff --cached --name-only \
+  | grep -E '(^|/)\.env(\..*)?$' \
+  | grep -vE '(^|/)\.env\.example$' || true)"
+
+if [ -n "$staged_env" ]; then
+  echo "refusing commit: environment file(s) staged:" >&2
+  echo "$staged_env" >&2
+  exit 1
+fi
+
+python3 scripts/scan_secrets.py

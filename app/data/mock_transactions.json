@@ -1,0 +1,7 @@
+[
+  {"date": "2026-08-01", "description": "MOCK / DEMO DATA - UPI-SWIGGY-ORDER123", "amount": 450, "mode": "UPI", "transaction_type": "DEBIT"},
+  {"date": "2026-08-02", "description": "MOCK / DEMO DATA - UPI-UBER-INDIA", "amount": 220, "mode": "UPI", "transaction_type": "DEBIT"},
+  {"date": "2026-08-03", "description": "MOCK / DEMO DATA - AMAZON INDIA", "amount": 1200, "mode": "CARD", "transaction_type": "DEBIT"},
+  {"date": "2026-08-04", "description": "MOCK / DEMO DATA - JIO RECHARGE", "amount": 799, "mode": "UPI", "transaction_type": "DEBIT"},
+  {"date": "2026-08-05", "description": "MOCK / DEMO DATA - SALARY CREDIT", "amount": 45000, "mode": "NEFT", "transaction_type": "CREDIT"}
+]
