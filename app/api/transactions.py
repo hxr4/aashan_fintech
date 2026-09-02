@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
 from starlette.concurrency import run_in_threadpool
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth import AuthenticatedUser, get_current_user
 from app.database.db import get_budgets
@@ -19,7 +19,9 @@ logger = logging.getLogger(__name__)
 
 
 class SMSRequest(BaseModel):
-    sms_text: str
+    model_config = ConfigDict(extra="forbid")
+
+    sms_text: str = Field(min_length=1, max_length=2000)
 
 
 @router.post("/sms", summary="Ingest one SMS without retaining the SMS text")

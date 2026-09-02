@@ -146,6 +146,10 @@ def list_processing_jobs(user_id: str) -> list[Dict[str, Any]]:
     return get_repository().list_processing_jobs(user_id)
 
 
+def record_privacy_event(user_id: str, event_type: str, metadata: Dict[str, Any]) -> None:
+    get_repository().record_privacy_event(user_id, event_type, metadata)
+
+
 def create_review(user_id: str, candidate_id: Optional[str], transaction_id: Optional[str], action: str, changes: Dict[str, Any]) -> str:
     return get_repository().create_review(user_id, candidate_id, transaction_id, action, changes)
 

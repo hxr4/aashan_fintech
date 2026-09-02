@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth import AuthenticatedUser, get_current_user
 from app.config import settings
@@ -30,8 +30,10 @@ mock_provider = get_aa_provider() if settings.mock_mode else None
 
 
 class ConsentRequest(BaseModel):
-    purpose: str = "Personal finance spending insights"
-    mobile_number: str = "9999999999"
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    purpose: str = Field(default="Personal finance spending insights", max_length=200)
+    mobile_number: str = Field(default="9999999999", pattern=r"^[0-9]{10}$")
     data_range_from: str = "2026-06-01T00:00:00Z"
     data_range_to: str = "2026-08-31T23:59:59Z"
     purpose_code: str = "102"
@@ -48,6 +50,8 @@ class ConsentRequest(BaseModel):
 
 
 class SessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     data_range: Optional[Dict[str, str]] = None
     format: str = "json"
 
@@ -99,7 +103,7 @@ def _provider():
 async def create_consent(request: ConsentRequest, user: AuthenticatedUser = Depends(get_current_user)):
     if not settings.mock_mode:
         raise HTTPException(status_code=400, detail="Mock endpoints require MOCK_MODE=true")
-    response = await _provider().create_consent(request.dict())
+    response = await _provider().create_consent(request.model_dump())
     consent_id = response.get("id")
     if consent_id:
         save_aa_consent_context(

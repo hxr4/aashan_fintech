@@ -18,7 +18,7 @@ def _candidate_item(row: Dict[str, Any], request: TransactionReviewRequest) -> N
     return NormalizedTransactionInput(
         transaction_at=_as_datetime(row["transaction_at"]),
         value_date=_as_datetime(row["value_date"]) if row.get("value_date") else None,
-        amount=request.amount if request.amount is not None else float(row["amount"]),
+        amount=request.amount if (request.amount is not None and request.action == "EDIT") else float(row["amount"]),
         currency=row.get("currency") or "INR",
         direction=direction if direction in {"CREDIT", "DEBIT", "TRANSFER"} else "DEBIT",
         transaction_type=direction if direction in {"CREDIT", "DEBIT", "TRANSFER"} else "DEBIT",

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Dict, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 SourceType = Literal["CSV", "PDF", "SMS", "SETU", "MANUAL"]
@@ -46,6 +46,10 @@ class NormalizedTransactionInput(BaseModel):
 
 
 class TransactionReviewRequest(BaseModel):
+    # Unknown keys are rejected rather than ignored, so a client cannot smuggle
+    # a field in and have a future version silently start honouring it.
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
     action: Literal[
         "APPROVE",
         "REJECT",
@@ -57,13 +61,17 @@ class TransactionReviewRequest(BaseModel):
         "MARK_TRANSFER",
         "MARK_DUPLICATE",
     ]
-    category: Optional[str] = None
-    merchant: Optional[str] = None
-    amount: Optional[float] = Field(default=None, gt=0)
-    description: Optional[str] = None
+    category: Optional[str] = Field(default=None, max_length=100)
+    merchant: Optional[str] = Field(default=None, max_length=200)
+    # Correcting a misparsed amount is legitimate, but it is honoured only for
+    # an explicit EDIT and is always written to the review audit log.
+    amount: Optional[float] = Field(default=None, gt=0, le=1_000_000_000)
+    description: Optional[str] = Field(default=None, max_length=500)
 
 
 class MerchantRuleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
     merchant_pattern: str = Field(min_length=1, max_length=200)
     category: Optional[str] = Field(default=None, max_length=100)
 

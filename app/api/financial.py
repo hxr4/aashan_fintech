@@ -7,6 +7,21 @@ from app.database import db
 from app.models.ingestion import MerchantRuleRequest, TransactionReviewRequest
 from app.services.review import review_candidate, review_transaction
 
+LIFECYCLE_STATES = {
+    "RECEIVED", "EXTRACTED", "NORMALIZED", "CLASSIFIED", "PENDING_REVIEW",
+    "CONFIRMED", "REJECTED", "DUPLICATE", "FAILED", "DELETED",
+}
+
+
+def _validated_status(status: Optional[str]) -> Optional[str]:
+    """Reject a nonsense filter loudly instead of returning an empty list."""
+    if status in (None, "", "ALL"):
+        return None
+    value = status.upper()
+    if value not in LIFECYCLE_STATES:
+        raise HTTPException(status_code=422, detail="Unknown status filter")
+    return value
+
 
 router = APIRouter(tags=["financial records"])
 
@@ -25,8 +40,8 @@ def get_owned_import(import_id: str, user: AuthenticatedUser = Depends(get_curre
 
 
 @router.get("/api/transaction-candidates", summary="List owned transaction candidates")
-def list_owned_candidates(status: Optional[str] = Query(default=None), user: AuthenticatedUser = Depends(get_current_user)):
-    return {"candidates": db.list_candidates(user.user_id, status)}
+def list_owned_candidates(status: Optional[str] = Query(default=None, max_length=32), user: AuthenticatedUser = Depends(get_current_user)):
+    return {"candidates": db.list_candidates(user.user_id, _validated_status(status))}
 
 
 @router.post("/api/transaction-candidates/{candidate_id}/review", summary="Review one owned candidate")
@@ -38,8 +53,8 @@ def review_owned_candidate(candidate_id: str, request: TransactionReviewRequest,
 
 
 @router.get("/api/transactions", summary="List owned canonical transactions")
-def list_owned_transactions(status: Optional[str] = Query(default="CONFIRMED"), user: AuthenticatedUser = Depends(get_current_user)):
-    return {"transactions": db.list_transactions(user.user_id, status)}
+def list_owned_transactions(status: Optional[str] = Query(default="CONFIRMED", max_length=32), user: AuthenticatedUser = Depends(get_current_user)):
+    return {"transactions": db.list_transactions(user.user_id, _validated_status(status))}
 
 
 @router.get("/api/jobs", summary="Recent processing jobs for the owner")
@@ -53,6 +68,13 @@ def get_job(job_id: str, user: AuthenticatedUser = Depends(get_current_user)):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@router.get("/api/privacy/export", summary="Everything Aashan holds for the owner")
+def privacy_export(user: AuthenticatedUser = Depends(get_current_user)):
+    from app.api.auth import _export
+
+    return _export(user.user_id)
 
 
 @router.get("/api/coverage", summary="What the ledger could and could not see")

@@ -59,6 +59,7 @@ class Repository(Protocol):
     def get_processing_job(self, user_id: str, job_id: str) -> Optional[Dict[str, Any]]: ...
     def list_processing_jobs(self, user_id: str) -> list[Dict[str, Any]]: ...
     def purge_user(self, user_id: str) -> Dict[str, int]: ...
+    def record_privacy_event(self, user_id: str, event_type: str, metadata: Dict[str, Any]) -> None: ...
     def create_review(self, user_id: str, candidate_id: Optional[str], transaction_id: Optional[str], action: str, changes: Dict[str, Any]) -> str: ...
     def create_merchant_rule(self, user_id: str, merchant_pattern: str, category: Optional[str]) -> str: ...
     def list_merchant_rules(self, user_id: str) -> list[Dict[str, Any]]: ...
@@ -198,24 +199,52 @@ class SQLiteRepository:
             connection.execute("INSERT OR IGNORE INTO aa_processed_sessions (session_id) VALUES (?)", (session_id,))
 
     def privacy_database_status(self, user_id: str) -> Dict[str, Any]:
+        """Say what is actually stored.
+
+        The previous version reported `raw_transactions_persisted: false` by
+        checking for three table names that have never existed, so the claim
+        could not fail. It also subtracted `transactions` from the reported
+        table list, which stopped being true in Part 2 when canonical rows
+        began holding full narration text.
+        """
         self.initialize()
         with get_sqlite_connection() as connection:
-            tables = {row["name"] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-            aggregate_count = connection.execute(
-                "SELECT COUNT(*) AS count FROM aggregate_snapshots WHERE user_id = ?", (user_id,)
-            ).fetchone()["count"]
-        # `transactions` is the future canonical normalized entity, not a raw
-        # source table. It is currently empty; raw source persistence is
-        # represented only by these explicitly raw tables.
-        raw_table_names = {"raw_transactions", "sms_messages", "aa_payloads"}
+            tables = {row["name"] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            counts = {}
+            for table in ("transactions", "source_observations", "aggregate_snapshots", "imports"):
+                if table in tables:
+                    counts[table] = connection.execute(
+                        f"SELECT COUNT(*) AS c FROM {table} WHERE user_id = ?", (user_id,)
+                    ).fetchone()["c"]
+            with_description = 0
+            if "transactions" in tables:
+                with_description = connection.execute(
+                    "SELECT COUNT(*) AS c FROM transactions WHERE user_id = ?"
+                    " AND description IS NOT NULL AND description != ''",
+                    (user_id,),
+                ).fetchone()["c"]
         return {
-            "raw_transaction_count_in_memory": 0,
-            "raw_transactions_persisted": bool(tables & raw_table_names),
-            "aggregate_data_persisted": aggregate_count > 0,
-            # Keep the privacy API focused on persisted raw-source tables;
-            # the empty canonical transaction table is a future foundation
-            # entity and must not be reported as raw transaction retention.
-            "persisted_tables": sorted(tables - {"transactions", "transaction_candidates"}),
+            "discarded_after_processing": [
+                "uploaded file bytes", "PDF passwords (never written to disk)",
+                "raw SMS message bodies", "encrypted provider payloads and their keys",
+            ],
+            "retained": {
+                "canonical_transactions": counts.get("transactions", 0),
+                "source_observations": counts.get("source_observations", 0),
+                "aggregate_snapshots": counts.get("aggregate_snapshots", 0),
+                "imports": counts.get("imports", 0),
+            },
+            "transaction_descriptions_stored": with_description > 0,
+            "descriptions_stored_count": with_description,
+            "statement": (
+                "Source material is discarded once it has been read. The transactions derived "
+                "from it are kept, including their descriptions, because totals, deduplication "
+                "and category review cannot work without them. Everything kept is yours: "
+                "exportable at /api/privacy/export and deletable at DELETE /api/auth/account."
+            ),
+            "export_endpoint": "/api/privacy/export",
+            "deletion_endpoint": "/api/auth/account",
             "user_id": user_id if user_id != LOCAL_USER_ID else None,
         }
 
@@ -553,6 +582,14 @@ class SQLiteRepository:
                     removed[table] = cursor.rowcount
         return removed
 
+    def record_privacy_event(self, user_id: str, event_type: str, metadata: Dict[str, Any]) -> None:
+        self.initialize()
+        with get_sqlite_connection() as connection:
+            connection.execute(
+                "INSERT INTO privacy_events (id, user_id, event_type, entity_type, metadata) VALUES (?, ?, ?, 'ACCOUNT', ?)",
+                (_new_id(), user_id, event_type, json.dumps(metadata)),
+            )
+
     def list_observations(self, user_id: str, transaction_id: str) -> list[Dict[str, Any]]:
         self.initialize()
         with get_sqlite_connection() as connection:
@@ -747,10 +784,47 @@ class PostgresRepository:
 
     def privacy_database_status(self, user_id: str) -> Dict[str, Any]:
         self.initialize()
+        counts: Dict[str, int] = {}
+        with_description = 0
         with self._engine.connect() as connection:
             self._set_user_context(connection, user_id)
-            aggregate_count = connection.execute(self._text("SELECT COUNT(*) FROM aggregate_snapshots WHERE user_id = :user_id"), {"user_id": user_id}).scalar_one()
-        return {"raw_transaction_count_in_memory": 0, "raw_transactions_persisted": False, "aggregate_data_persisted": aggregate_count > 0, "persisted_tables": [], "user_id": user_id}
+            for table in ("transactions", "source_observations", "aggregate_snapshots", "imports"):
+                try:
+                    row = connection.execute(self._text(
+                        f"SELECT COUNT(*) AS c FROM {table} WHERE user_id = :user_id"), {"user_id": user_id}).mappings().first()
+                    counts[table] = int(row["c"]) if row else 0
+                except Exception:
+                    counts[table] = 0
+            try:
+                row = connection.execute(self._text(
+                    "SELECT COUNT(*) AS c FROM transactions WHERE user_id = :user_id AND description IS NOT NULL AND description <> ''"),
+                    {"user_id": user_id}).mappings().first()
+                with_description = int(row["c"]) if row else 0
+            except Exception:
+                with_description = 0
+        return {
+            "discarded_after_processing": [
+                "uploaded file bytes", "PDF passwords (never written to disk)",
+                "raw SMS message bodies", "encrypted provider payloads and their keys",
+            ],
+            "retained": {
+                "canonical_transactions": counts.get("transactions", 0),
+                "source_observations": counts.get("source_observations", 0),
+                "aggregate_snapshots": counts.get("aggregate_snapshots", 0),
+                "imports": counts.get("imports", 0),
+            },
+            "transaction_descriptions_stored": with_description > 0,
+            "descriptions_stored_count": with_description,
+            "statement": (
+                "Source material is discarded once it has been read. The transactions derived "
+                "from it are kept, including their descriptions, because totals, deduplication "
+                "and category review cannot work without them. Everything kept is yours: "
+                "exportable at /api/privacy/export and deletable at DELETE /api/auth/account."
+            ),
+            "export_endpoint": "/api/privacy/export",
+            "deletion_endpoint": "/api/auth/account",
+            "user_id": user_id if user_id != LOCAL_USER_ID else None,
+        }
 
     def create_import(self, user_id: str, source: str, filename: Optional[str] = None, account_id: Optional[str] = None, idempotency_key: Optional[str] = None) -> Dict[str, Any]:
         self.initialize()
@@ -1010,6 +1084,15 @@ class PostgresRepository:
                 if result.rowcount > 0:
                     removed[table] = result.rowcount
         return removed
+
+    def record_privacy_event(self, user_id: str, event_type: str, metadata: Dict[str, Any]) -> None:
+        self.initialize()
+        with self._engine.begin() as connection:
+            self._set_user_context(connection, user_id)
+            connection.execute(self._text(
+                "INSERT INTO privacy_events (user_id, event_type, entity_type, metadata)"
+                " VALUES (:user_id, :event_type, 'ACCOUNT', CAST(:metadata AS jsonb))"),
+                {"user_id": user_id, "event_type": event_type, "metadata": json.dumps(metadata)})
 
     def list_observations(self, user_id: str, transaction_id: str) -> list[Dict[str, Any]]:
         self.initialize()
