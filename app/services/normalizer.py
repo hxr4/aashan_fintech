@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Any, Dict, Iterable, List
 
 from app.models.transaction import Transaction
+from app.services.clock import to_ist
 
 
 ALIASES = {
@@ -36,15 +37,20 @@ def _value(raw: Dict[str, Any], field: str, default: Any = None) -> Any:
 
 
 def _parse_date(value: Any) -> datetime:
+    """Parse a source date and anchor it to Asia/Kolkata.
+
+    A statement or an SMS carries local wall-clock time, so a naive value is
+    treated as already-Indian rather than as UTC.
+    """
     if isinstance(value, datetime):
-        return value
+        return to_ist(value)
     text = str(value).strip()
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d", "%Y-%m-%dT%H:%M:%S"):
         try:
-            return datetime.strptime(text[:19], fmt)
+            return to_ist(datetime.strptime(text[:19], fmt))
         except ValueError:
             pass
-    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    return to_ist(text)
 
 
 def normalize_transaction(raw: Dict[str, Any]) -> Transaction:

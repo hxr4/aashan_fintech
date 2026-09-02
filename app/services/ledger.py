@@ -21,6 +21,7 @@ from app.services.aggregator import aggregate_transactions
 from app.services.anomaly import detect_anomalies
 from app.services.budget import budget_status
 from app.services import coverage as coverage_service
+from app.services.clock import to_ist
 
 
 EMPTY_AGGREGATE: Dict[str, Any] = {
@@ -52,13 +53,10 @@ def empty_aggregate() -> Dict[str, Any]:
 
 
 def _as_datetime(value: Any) -> datetime:
-    if isinstance(value, datetime):
-        return value
-    text = str(value)
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return to_ist(value)
     except ValueError:
-        return datetime.strptime(text[:19], "%Y-%m-%d %H:%M:%S")
+        return to_ist(datetime.strptime(str(value)[:19], "%Y-%m-%d %H:%M:%S"))
 
 
 def _row_to_transaction(row: Dict[str, Any]) -> Transaction:
