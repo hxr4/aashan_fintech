@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 
 from app.api.aa import router as aa_router
 from app.api.auth import router as auth_router
+from app.api.dev import dev_enabled
+from app.api.dev import router as dev_router
 from app.api.financial import router as financial_router
 from app.api.health import router as health_router
 from app.api.insights import router as insights_router
@@ -43,6 +45,14 @@ app.include_router(financial_router)
 app.include_router(webhook_router)
 app.include_router(transactions_router)
 app.include_router(insights_router)
+
+# The verification dashboard exists only outside production.
+if dev_enabled():
+    app.include_router(dev_router)
+
+    @app.get("/dev", include_in_schema=False)
+    def dev_dashboard():
+        return FileResponse(Path(__file__).resolve().parent / "static" / "dev_dashboard.html")
 
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"

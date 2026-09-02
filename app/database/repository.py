@@ -56,6 +56,7 @@ class Repository(Protocol):
     def list_review_queue(self, user_id: str) -> list[Dict[str, Any]]: ...
     def record_coverage(self, user_id: str, source: str, covered_from: str, covered_to: str, account_id: Optional[str] = None) -> None: ...
     def list_coverage(self, user_id: str) -> list[Dict[str, Any]]: ...
+    def purge_user(self, user_id: str) -> Dict[str, int]: ...
     def create_review(self, user_id: str, candidate_id: Optional[str], transaction_id: Optional[str], action: str, changes: Dict[str, Any]) -> str: ...
     def create_merchant_rule(self, user_id: str, merchant_pattern: str, category: Optional[str]) -> str: ...
     def list_merchant_rules(self, user_id: str) -> list[Dict[str, Any]]: ...
@@ -517,6 +518,23 @@ class SQLiteRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    OWNED_TABLES = ("source_observations","transaction_reviews","transactions","transaction_candidates","processing_jobs","imports","coverage_windows","merchant_rules","aggregate_snapshots","budgets","consents","aa_consent_context","financial_accounts","account_connections","privacy_events")
+
+    def purge_user(self, user_id: str) -> Dict[str, int]:
+        """Delete every row this owner has. Child tables first."""
+        self.initialize()
+        removed: Dict[str, int] = {}
+        with get_sqlite_connection() as connection:
+            present = {row["name"] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            for table in self.OWNED_TABLES:
+                if table not in present:
+                    continue
+                cursor = connection.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
+                if cursor.rowcount > 0:
+                    removed[table] = cursor.rowcount
+        return removed
+
     def list_observations(self, user_id: str, transaction_id: str) -> list[Dict[str, Any]]:
         self.initialize()
         with get_sqlite_connection() as connection:
@@ -939,6 +957,23 @@ class PostgresRepository:
                 "SELECT * FROM coverage_windows WHERE user_id = :user_id ORDER BY covered_from"),
                 {"user_id": user_id}).mappings().all()
         return [dict(row) for row in rows]
+
+    OWNED_TABLES = ("source_observations","transaction_reviews","transactions","transaction_candidates","processing_jobs","imports","coverage_windows","merchant_rules","aggregate_snapshots","budgets","consents","aa_consent_context","financial_accounts","account_connections","privacy_events")
+
+    def purge_user(self, user_id: str) -> Dict[str, int]:
+        self.initialize()
+        removed: Dict[str, int] = {}
+        with self._engine.begin() as connection:
+            self._set_user_context(connection, user_id)
+            for table in self.OWNED_TABLES:
+                try:
+                    result = connection.execute(
+                        self._text(f"DELETE FROM {table} WHERE user_id = :user_id"), {"user_id": user_id})
+                except Exception:
+                    continue
+                if result.rowcount > 0:
+                    removed[table] = result.rowcount
+        return removed
 
     def list_observations(self, user_id: str, transaction_id: str) -> list[Dict[str, Any]]:
         self.initialize()

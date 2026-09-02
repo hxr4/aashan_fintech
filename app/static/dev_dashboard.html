@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aashan · verification dashboard</title>
+<style>
+  :root{
+    --cream:#FEF5E3; --cream2:#F7E9CE; --paper:#FFFBF2;
+    --blue:#1B3EC2; --ink:#14224C; --muted:#5B6486;
+    --pink:#F5335F; --yellow:#FFCE2E; --lime:#B4DC28; --orange:#FF5A1F; --green:#2F7D3A;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--cream);color:var(--ink);
+       font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       background-image:radial-gradient(circle,rgba(27,62,194,.06) 1px,transparent 1.1px);
+       background-size:7px 7px;padding:28px 22px 60px}
+  .wrap{max-width:1180px;margin:0 auto}
+  header{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;flex-wrap:wrap;
+         border-bottom:3px solid var(--blue);padding-bottom:14px;margin-bottom:22px}
+  h1{font-size:30px;letter-spacing:-.4px;font-weight:800;color:var(--blue)}
+  h1 span{color:var(--pink)}
+  .sub{color:var(--muted);font-size:13.5px;margin-top:4px;max-width:64ch;line-height:1.5}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  button{font:inherit;font-weight:700;cursor:pointer;border:2.5px solid var(--blue);background:var(--yellow);
+         color:var(--ink);padding:10px 18px;border-radius:10px;box-shadow:4px 4px 0 var(--blue);transition:.06s}
+  button:active{transform:translate(3px,3px);box-shadow:1px 1px 0 var(--blue)}
+  button.ghost{background:var(--paper)}
+  button:disabled{opacity:.5;cursor:wait}
+  .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:20px}
+  .tally{margin-left:auto;font-weight:800;font-size:15px}
+  .tally .ok{color:var(--green)} .tally .bad{color:var(--orange)}
+  .card{background:var(--paper);border:2.5px solid var(--blue);border-radius:14px;padding:16px 18px;
+        box-shadow:5px 5px 0 var(--blue);margin-bottom:16px}
+  .card.fail{border-color:var(--orange);box-shadow:5px 5px 0 var(--orange)}
+  .card h2{font-size:17px;font-weight:800;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .pill{font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;
+        padding:3px 9px;border-radius:20px;border:2px solid currentColor}
+  .pill.pass{color:var(--green);background:#EEF9EE}
+  .pill.fail{color:var(--orange);background:#FFF0E8}
+  .note{color:var(--muted);font-size:13px;margin:6px 0 12px;line-height:1.5}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+  th,td{text-align:left;padding:6px 10px 6px 0;border-bottom:1px solid #E2DCCB;vertical-align:top}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--pink);
+     border-bottom:2px solid var(--blue);font-weight:800}
+  td.n{text-align:right;font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .chk{display:flex;gap:9px;align-items:flex-start;padding:5px 0;font-size:13.5px;line-height:1.45}
+  .mark{flex:0 0 18px;height:18px;border-radius:5px;display:grid;place-items:center;
+        font-size:11px;font-weight:900;color:#fff;margin-top:1px}
+  .mark.p{background:var(--green)} .mark.f{background:var(--orange)}
+  .exp{color:var(--muted);font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+  .panel{background:var(--cream2);border-radius:10px;padding:12px 14px}
+  .panel h3{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--pink);margin-bottom:8px}
+  .cov{display:flex;gap:3px;margin:8px 0;flex-wrap:wrap}
+  .cov i{width:11px;height:18px;border-radius:2px;background:var(--lime);display:block}
+  .cov i.gap{background:#E6DCC4;border:1px dashed var(--orange)}
+  .kv{display:flex;justify-content:space-between;gap:12px;font-size:12.5px;padding:3px 0}
+  .kv b{font-family:ui-monospace,Menlo,monospace}
+  .tag{font-size:10.5px;font-weight:800;padding:2px 7px;border-radius:5px;text-transform:uppercase}
+  .tag.dup{background:#FFF0E8;color:var(--orange)} .tag.cat{background:#FFF7DA;color:#8A6A00}
+  .tag.ok{background:#EEF9EE;color:var(--green)}
+  footer{color:var(--muted);font-size:12px;margin-top:28px;line-height:1.6}
+  .spin{opacity:.55}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Aashan <span>·</span> verification dashboard</h1>
+      <p class="sub">Every scenario runs against a clean, isolated slate through the real API. Green means the behaviour
+      described in the architecture reports is actually happening in this build — not that a test file says so.</p>
+    </div>
+    <div class="mono" style="font-size:12px;color:var(--muted)" id="env">loading…</div>
+  </header>
+
+  <div class="bar">
+    <button id="runAll">Run every scenario</button>
+    <button class="ghost" id="clear">Clear</button>
+    <div class="tally" id="tally"></div>
+  </div>
+
+  <div id="out"></div>
+
+  <footer>
+    Dev-only. This dashboard and its API refuse to mount when <span class="mono">ENVIRONMENT=production</span>
+    or <span class="mono">AUTH_REQUIRED=true</span>.
+  </footer>
+</div>
+
+<script>
+const out = document.getElementById('out');
+const tally = document.getElementById('tally');
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money = v => (v === null || v === undefined) ? '—'
+  : '₹' + Number(v).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
+
+async function api(path, opts={}) {
+  const res = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
+  if (!res.ok) throw new Error(path + ' → ' + res.status);
+  return res.json();
+}
+
+function coverageStrip(cov) {
+  if (!cov || !cov.first_covered) return '<p class="exp">No coverage recorded.</p>';
+  const start = new Date(cov.first_covered), end = new Date(cov.last_covered);
+  const total = Math.round((end - start) / 86400000) + 1;
+  const gapDays = new Set();
+  (cov.gaps || []).forEach(g => {
+    let d = new Date(g.from);
+    while (d <= new Date(g.to)) { gapDays.add(d.toISOString().slice(0,10)); d.setDate(d.getDate()+1); }
+  });
+  let cells = '';
+  for (let i = 0; i < Math.min(total, 80); i++) {
+    const d = new Date(start); d.setDate(d.getDate() + i);
+    cells += `<i class="${gapDays.has(d.toISOString().slice(0,10)) ? 'gap' : ''}"></i>`;
+  }
+  return `<div class="cov">${cells}</div>
+    <div class="kv"><span>Covered days</span><b>${cov.covered_days}</b></div>
+    <div class="kv"><span>Span</span><b>${esc(cov.first_covered)} → ${esc(cov.last_covered)}</b></div>
+    ${(cov.gaps||[]).map(g => `<div class="kv"><span style="color:var(--orange)">Gap</span>
+      <b>${esc(g.from)} → ${esc(g.to)} (${g.days}d)</b></div>`).join('')}`;
+}
+
+function render(r) {
+  const failed = r.failed > 0;
+  const checks = r.checks.map(c => `
+    <div class="chk">
+      <span class="mark ${c.passed ? 'p' : 'f'}">${c.passed ? '✓' : '✗'}</span>
+      <span>${esc(c.label)}
+        <span class="exp">— expected <b>${esc(c.expected)}</b>, got <b>${esc(c.actual)}</b></span>
+      </span>
+    </div>`).join('');
+
+  const txns = r.transactions.length ? `<table>
+      <tr><th>Date</th><th>Description</th><th class="n">Amount</th><th>Dir</th><th>Category</th><th>Status</th><th class="n">Sources</th></tr>
+      ${r.transactions.map(t => `<tr>
+        <td class="mono">${esc(t.date)}</td><td>${esc(t.description)}</td>
+        <td class="n">${money(t.amount)}</td><td>${esc(t.direction)}</td>
+        <td>${esc(t.category ?? '—')}</td>
+        <td><span class="tag ${t.status === 'CONFIRMED' ? 'ok' : 'dup'}">${esc(t.status)}</span></td>
+        <td class="n">${t.witnesses}</td></tr>`).join('')}
+    </table>` : '<p class="exp">No transactions.</p>';
+
+  const queue = r.review_queue.length ? r.review_queue.map(q => `
+      <div class="kv"><span>${esc(q.description)} <span class="tag ${q.reason === 'POSSIBLE_DUPLICATE' ? 'dup' : 'cat'}">${esc(q.reason)}</span></span>
+      <b>${money(q.amount)} ${q.counted_in_totals ? '· counted' : '· held back'}</b></div>`).join('')
+    : '<p class="exp">Queue empty — nothing needs a human.</p>';
+
+  const rates = r.rates && r.rates.basis ? `
+      <div class="kv"><span>Basis</span><b>${esc(r.rates.basis)}</b></div>
+      <div class="kv"><span>Per covered day</span><b>${money(r.rates.spending_per_covered_day)}</b></div>
+      <div class="kv"><span>Projected monthly</span><b>${money(r.rates.projected_monthly)}</b></div>
+      <p class="exp" style="margin-top:6px">${esc(r.rates.explanation ?? '')}</p>` : '';
+
+  return `<div class="card ${failed ? 'fail' : ''}">
+    <h2>${esc(r.title)}
+      <span class="pill ${failed ? 'fail' : 'pass'}">${r.passed}/${r.passed + r.failed} passed</span></h2>
+    <p class="note">${esc(r.note)}</p>
+    ${checks}
+    <div class="grid">
+      <div class="panel"><h3>Ledger</h3>
+        <div class="kv"><span>Total spending</span><b>${money(r.aggregate.total_spending)}</b></div>
+        <div class="kv"><span>Total credit</span><b>${money(r.aggregate.total_credit)}</b></div>
+        <div class="kv"><span>Net cash flow</span><b>${money(r.aggregate.net_cash_flow)}</b></div>
+        <div class="kv"><span>Transactions</span><b>${r.aggregate.transaction_count}</b></div>
+        ${rates}
+      </div>
+      <div class="panel"><h3>Coverage</h3>${coverageStrip(r.coverage)}</div>
+    </div>
+    <div class="panel" style="margin-top:12px"><h3>Review queue</h3>${queue}</div>
+    <div class="panel" style="margin-top:12px"><h3>Canonical transactions</h3>${txns}</div>
+  </div>`;
+}
+
+document.getElementById('runAll').onclick = async (e) => {
+  e.target.disabled = true; out.classList.add('spin');
+  tally.textContent = 'running…';
+  try {
+    const data = await api('/api/dev/run-all', {method:'POST'});
+    out.innerHTML = data.results.map(render).join('');
+    tally.innerHTML = `<span class="${data.failed ? 'bad' : 'ok'}">${data.passed} passed</span>`
+      + (data.failed ? ` · <span class="bad">${data.failed} failed</span>` : ' · 0 failed');
+  } catch (err) {
+    out.innerHTML = `<div class="card fail"><h2>Could not run</h2><p class="note mono">${esc(err.message)}</p></div>`;
+    tally.textContent = '';
+  } finally { e.target.disabled = false; out.classList.remove('spin'); }
+};
+
+document.getElementById('clear').onclick = () => { out.innerHTML = ''; tally.textContent = ''; };
+
+api('/health').then(h => {
+  document.getElementById('env').textContent =
+    `${h.app} · ${h.environment} · mock_mode=${h.mock_mode}`;
+}).catch(() => { document.getElementById('env').textContent = 'API unreachable'; });
+</script>
+</body>
+</html>

@@ -134,6 +134,10 @@ def list_coverage(user_id: str) -> list[Dict[str, Any]]:
     return get_repository().list_coverage(user_id)
 
 
+def purge_user(user_id: str) -> Dict[str, int]:
+    return get_repository().purge_user(user_id)
+
+
 def create_review(user_id: str, candidate_id: Optional[str], transaction_id: Optional[str], action: str, changes: Dict[str, Any]) -> str:
     return get_repository().create_review(user_id, candidate_id, transaction_id, action, changes)
 
