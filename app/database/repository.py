@@ -56,6 +56,8 @@ class Repository(Protocol):
     def list_review_queue(self, user_id: str) -> list[Dict[str, Any]]: ...
     def record_coverage(self, user_id: str, source: str, covered_from: str, covered_to: str, account_id: Optional[str] = None) -> None: ...
     def list_coverage(self, user_id: str) -> list[Dict[str, Any]]: ...
+    def get_processing_job(self, user_id: str, job_id: str) -> Optional[Dict[str, Any]]: ...
+    def list_processing_jobs(self, user_id: str) -> list[Dict[str, Any]]: ...
     def purge_user(self, user_id: str) -> Dict[str, int]: ...
     def create_review(self, user_id: str, candidate_id: Optional[str], transaction_id: Optional[str], action: str, changes: Dict[str, Any]) -> str: ...
     def create_merchant_rule(self, user_id: str, merchant_pattern: str, category: Optional[str]) -> str: ...
@@ -509,6 +511,22 @@ class SQLiteRepository:
                 (_new_id(), user_id, account_id, source, covered_from, covered_to),
             )
 
+    def get_processing_job(self, user_id: str, job_id: str) -> Optional[Dict[str, Any]]:
+        self.initialize()
+        with get_sqlite_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM processing_jobs WHERE id = ? AND user_id = ?", (job_id, user_id)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_processing_jobs(self, user_id: str) -> list[Dict[str, Any]]:
+        self.initialize()
+        with get_sqlite_connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM processing_jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT 50", (user_id,)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_coverage(self, user_id: str) -> list[Dict[str, Any]]:
         self.initialize()
         with get_sqlite_connection() as connection:
@@ -948,6 +966,24 @@ class PostgresRepository:
                 ON CONFLICT DO NOTHING"""),
                 {"user_id": user_id, "account_id": account_id, "source": source,
                  "covered_from": covered_from, "covered_to": covered_to})
+
+    def get_processing_job(self, user_id: str, job_id: str) -> Optional[Dict[str, Any]]:
+        self.initialize()
+        with self._engine.connect() as connection:
+            self._set_user_context(connection, user_id)
+            row = connection.execute(self._text(
+                "SELECT * FROM processing_jobs WHERE id = CAST(:job_id AS UUID) AND user_id = :user_id"),
+                {"job_id": job_id, "user_id": user_id}).mappings().first()
+        return dict(row) if row else None
+
+    def list_processing_jobs(self, user_id: str) -> list[Dict[str, Any]]:
+        self.initialize()
+        with self._engine.connect() as connection:
+            self._set_user_context(connection, user_id)
+            rows = connection.execute(self._text(
+                "SELECT * FROM processing_jobs WHERE user_id = :user_id ORDER BY created_at DESC LIMIT 50"),
+                {"user_id": user_id}).mappings().all()
+        return [dict(row) for row in rows]
 
     def list_coverage(self, user_id: str) -> list[Dict[str, Any]]:
         self.initialize()

@@ -42,6 +42,19 @@ def list_owned_transactions(status: Optional[str] = Query(default="CONFIRMED"), 
     return {"transactions": db.list_transactions(user.user_id, status)}
 
 
+@router.get("/api/jobs", summary="Recent processing jobs for the owner")
+def list_jobs(user: AuthenticatedUser = Depends(get_current_user)):
+    return {"jobs": db.list_processing_jobs(user.user_id)}
+
+
+@router.get("/api/jobs/{job_id}", summary="One processing job")
+def get_job(job_id: str, user: AuthenticatedUser = Depends(get_current_user)):
+    job = db.get_processing_job(user.user_id, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
 @router.get("/api/coverage", summary="What the ledger could and could not see")
 def coverage_map(user: AuthenticatedUser = Depends(get_current_user)):
     from app.services import coverage as coverage_service
