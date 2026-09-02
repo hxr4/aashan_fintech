@@ -153,7 +153,6 @@ async def _process_setu_transactions(
         user_id,
         idempotency_key=f"session:{session_id}" if session_id else f"notification:{event_key}",
         budgets=get_budgets(user_id),
-        processor=process_raw_rows,
     )
     if result.get("status") == "already_processed":
         return {"processed": False, "duplicate": True, "session_id": session_id}

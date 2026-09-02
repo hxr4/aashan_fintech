@@ -16,10 +16,12 @@ from app.api.transactions import router as transactions_router
 from app.api.webhooks import router as webhook_router
 from app.auth import AuthenticatedUser, get_current_user
 from app.config import settings
-from app.database.db import get_budgets, init_db, latest_aggregate, privacy_database_status, save_budgets
+from app.database.db import get_budgets, init_db, privacy_database_status, save_budgets
 from app.services.budget import budget_status
 from app.services.mock_aa import generate_mock_transactions
-from app.services.pipeline import process_raw_rows
+from app.services import ledger
+from app.services.ingestion import RowsAdapter
+from app.services.ingestion.service import ingest_with_adapter
 
 
 app = FastAPI(
@@ -57,21 +59,8 @@ class BudgetRequest(BaseModel):
 
 
 def _aggregate_or_empty(user_id: str) -> Dict[str, Any]:
-    return latest_aggregate(user_id) or {
-        "total_spending": 0,
-        "total_debit": 0,
-        "total_credit": 0,
-        "net_cash_flow": 0,
-        "categories": {},
-        "monthly": {},
-        "daily": {},
-        "average_daily_spending": 0,
-        "category_percentages": {},
-        "transaction_count": 0,
-        "weekend_vs_weekday": {"weekend": 0, "weekday": 0},
-        "anomalies": [],
-        "budget_status": [],
-    }
+    """Read the ledger. Never a stored snapshot."""
+    return ledger.read_aggregate(user_id)
 
 
 @app.on_event("startup")
@@ -150,12 +139,18 @@ def run_demo(user: AuthenticatedUser = Depends(get_current_user)):
     if not settings.mock_mode:
         raise HTTPException(status_code=400, detail="Demo requires MOCK_MODE=true; Setu mode never silently falls back to demo data")
     rows = generate_mock_transactions(75)
-    aggregate = process_raw_rows(rows, get_budgets(user.user_id), user_id=user.user_id, source="MOCK")
-    print("\n========================================\n        AASHAN PRIVACY ENGINE\n========================================\n\nTransactions processed: %d\n\nCategories generated: %d\n\nRaw transactions persisted: NO\n\nAggregate data persisted: YES\n\nAnomalies detected: %d\n\nPrivacy mode: GOLDfish MEMORY 🐟\n\n========================================\n" % (aggregate["transaction_count"], len(aggregate["categories"]), len(aggregate["anomalies"])))
+    result = ingest_with_adapter(
+        RowsAdapter("MANUAL"),
+        rows,
+        user.user_id,
+        filename="demo",
+        budgets=get_budgets(user.user_id),
+    )
+    aggregate = result["aggregate"]
     return {
         "status": "completed",
         "source": "MOCK AA DATA",
-        "transactions_processed": aggregate["transaction_count"],
+        "transactions_processed": result["rows_confirmed"],
         "raw_transactions_persisted": False,
         "aggregate_data_persisted": True,
         "categories": aggregate["categories"],

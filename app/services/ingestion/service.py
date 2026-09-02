@@ -1,12 +1,11 @@
-import inspect
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
 from app.database import db
 from app.models.ingestion import NormalizedTransactionInput
 from app.models.transaction import Transaction
 import app.services.pipeline as pipeline
-from app.services.pipeline import process_raw_rows
 from app.services.merchant_rules import apply_user_merchant_rules
+from app.services import ledger
 from .base import FinancialSourceAdapter
 
 
@@ -17,21 +16,6 @@ class IngestionResult(Dict[str, Any]):
 def _safe_error(exc: Exception) -> str:
     message = str(exc).replace("\n", " ").strip()
     return message[:240] or "Processing failed"
-
-
-def _pipeline_call(processor: Callable[..., Dict[str, Any]], rows: list[Dict[str, Any]], budgets: Dict[str, float], user_id: str, source: str, import_id: str) -> Dict[str, Any]:
-    kwargs: Dict[str, Any] = {}
-    try:
-        parameters = inspect.signature(processor).parameters
-    except (TypeError, ValueError):
-        parameters = {}
-    if "user_id" in parameters:
-        kwargs["user_id"] = user_id
-    if "source" in parameters:
-        kwargs["source"] = source
-    if "import_id" in parameters:
-        kwargs["import_id"] = import_id
-    return processor(rows, budgets, **kwargs)
 
 
 def _classify_for_user(transaction: Transaction, user_id: str) -> Dict[str, Any]:
@@ -56,7 +40,6 @@ def ingest_with_adapter(
     account_id: Optional[str] = None,
     idempotency_key: Optional[str] = None,
     budgets: Optional[Dict[str, float]] = None,
-    processor: Callable[..., Dict[str, Any]] = process_raw_rows,
 ) -> IngestionResult:
     """Run one source through the shared import/candidate/transaction boundary."""
     source = adapter.source_type
@@ -71,7 +54,7 @@ def ingest_with_adapter(
             "duplicates": 0,
             "candidates_pending_review": 0,
             "rows_processed": import_record.get("row_count", 0),
-            "aggregate": db.latest_aggregate(user_id),
+            "aggregate": ledger.read_aggregate(user_id),
         })
 
     import_id = import_record["id"]
@@ -152,7 +135,11 @@ def ingest_with_adapter(
 
         db.update_processing_checkpoint(job_id, user_id, "CLASSIFICATION_COMPLETED", progress=counts)
         db.update_processing_checkpoint(job_id, user_id, "PERSISTENCE_COMPLETED", progress={"confirmed": counts["rows_confirmed"]})
-        aggregate = _pipeline_call(processor, categorized_rows, budgets or db.get_budgets(user_id), user_id, source, import_id) if categorized_rows else db.latest_aggregate(user_id)
+        # The ledger is the read model: recompute from every confirmed row the
+        # owner has, not from the rows of this import alone.
+        aggregate = ledger.compute_aggregate(
+            user_id, budgets, source=f"INGEST_{source}", import_id=import_id
+        )
         db.update_processing_checkpoint(job_id, user_id, "AGGREGATION_COMPLETED", progress={"confirmed": counts["rows_confirmed"]})
         final_status = "PARTIAL" if counts["duplicates"] else "COMPLETED"
         db.complete_import(import_id, user_id, final_status, counts["rows_received"])

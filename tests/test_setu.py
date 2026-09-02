@@ -171,17 +171,12 @@ def test_flatten_and_normalize_nested_setu_transaction():
     assert normalized.description == "SALARY CREDIT"
 
 
-def test_setu_session_webhook_invokes_pipeline_and_is_idempotent(monkeypatch):
+def test_setu_session_webhook_creates_canonical_transactions_and_is_idempotent(monkeypatch):
     _configure_setu(monkeypatch)
-    import app.api.webhooks as webhooks
+    from app.auth import LOCAL_USER_ID
+    from app.database import db
+    from app.services import ledger
 
-    calls = []
-
-    def fake_pipeline(rows, budgets):
-        calls.append((rows, budgets))
-        return {"total_spending": 0, "total_credit": 450, "transaction_count": len(rows)}
-
-    monkeypatch.setattr(webhooks, "process_raw_rows", fake_pipeline)
     consent_id = "consent-" + uuid.uuid4().hex
     session_id = "session-" + uuid.uuid4().hex
     payload = {
@@ -201,16 +196,24 @@ def test_setu_session_webhook_invokes_pipeline_and_is_idempotent(monkeypatch):
     assert first.json()["processed"] is True
     assert second.status_code == 200
     assert second.json()["duplicate"] is True
-    assert len(calls) == 1
-    assert calls[0][0][0]["transaction_type"] == "CREDIT"
+
+    # Assert the outcome rather than that an internal function was called:
+    # the fetched FI credit of 450 became exactly one canonical transaction.
+    rows = db.list_transactions(LOCAL_USER_ID, "CONFIRMED")
+    assert len(rows) == 1
+    assert rows[0]["direction"] == "CREDIT"
+    assert float(rows[0]["amount"]) == 450.0
+    aggregate = ledger.read_aggregate(LOCAL_USER_ID)
+    assert aggregate["total_credit"] == 450
+    assert aggregate["total_spending"] == 0
 
 
 def test_fi_data_ready_flattens_embedded_payload_and_processes_once(monkeypatch):
     _configure_setu(monkeypatch)
-    import app.api.webhooks as webhooks
+    from app.auth import LOCAL_USER_ID
+    from app.database import db
+    from app.services import ledger
 
-    calls = []
-    monkeypatch.setattr(webhooks, "process_raw_rows", lambda rows, budgets: calls.append(rows) or {"total_spending": 100, "total_credit": 0, "transaction_count": len(rows)})
     consent_id = "consent-" + uuid.uuid4().hex
     notification_id = "notification-" + uuid.uuid4().hex
     payload = {
@@ -232,4 +235,8 @@ def test_fi_data_ready_flattens_embedded_payload_and_processes_once(monkeypatch)
     assert first.status_code == 200
     assert first.json()["processed"] is True
     assert second.json()["duplicate"] is True
-    assert len(calls) == 1
+
+    rows = db.list_transactions(LOCAL_USER_ID, "CONFIRMED")
+    assert len(rows) == 1
+    assert rows[0]["direction"] == "DEBIT"
+    assert ledger.read_aggregate(LOCAL_USER_ID)["total_spending"] == 100

@@ -21,7 +21,8 @@ from app.services.aa_client import (
     get_aa_provider,
     safe_setu_url,
 )
-from app.services.pipeline import process_raw_rows
+from app.services.ingestion import RowsAdapter
+from app.services.ingestion.service import ingest_with_adapter
 
 router = APIRouter(prefix="/api/aa", tags=["account aggregator"])
 logger = logging.getLogger(__name__)
@@ -213,8 +214,14 @@ async def fetch_mock_data(consent_id: str = Query(...), user: AuthenticatedUser 
     try:
         session = await provider.create_data_session(consent_id)
         rows = await provider.fetch_data(session["id"])
-        aggregate = process_raw_rows(rows, get_budgets(user.user_id), user_id=user.user_id, source="SETU_MOCK")
-        return {"status": "processed", "source": provider.source_label, "session": session, "aggregate": aggregate, "raw_transactions_persisted": False}
+        result = ingest_with_adapter(
+            RowsAdapter("SETU"),
+            rows,
+            user.user_id,
+            idempotency_key=f"mock-session:{session['id']}",
+            budgets=get_budgets(user.user_id),
+        )
+        return {"status": "processed", "source": provider.source_label, "session": session, "aggregate": result["aggregate"], "raw_transactions_persisted": False}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

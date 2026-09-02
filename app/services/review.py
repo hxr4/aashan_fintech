@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional
 
 from app.database import db
 from app.models.ingestion import NormalizedTransactionInput, TransactionReviewRequest
-from app.services.pipeline import process_raw_rows
+from app.services import ledger
 
 
 def _as_datetime(value: Any) -> datetime:
@@ -35,17 +35,13 @@ def _candidate_item(row: Dict[str, Any], request: TransactionReviewRequest) -> N
 
 
 def _reaggregate_confirmed(user_id: str) -> Dict[str, Any]:
-    rows = []
-    for row in db.list_transactions(user_id, "CONFIRMED"):
-        rows.append({
-            "date": row["transaction_at"],
-            "description": row.get("description") or "",
-            "amount": row["amount"],
-            "mode": row.get("mode") or "UNKNOWN",
-            "transaction_type": row.get("transaction_type") or row.get("direction") or "DEBIT",
-            "budget_status": row.get("budget_status") or row.get("budget_inclusion") or "UNDECIDED",
-        })
-    return process_raw_rows(rows, db.get_budgets(user_id), user_id=user_id, source="REVIEW")
+    """Recompute from the ledger.
+
+    The previous version rebuilt rows without their categories and re-ran the
+    classifier, which meant a user's own correction could be overwritten by the
+    automated guess on the next aggregation.
+    """
+    return ledger.compute_aggregate(user_id, source="REVIEW")
 
 
 def review_candidate(user_id: str, candidate_id: str, request: TransactionReviewRequest) -> Optional[Dict[str, Any]]:
@@ -57,7 +53,7 @@ def review_candidate(user_id: str, candidate_id: str, request: TransactionReview
         transaction_status = "DUPLICATE" if request.action == "MARK_DUPLICATE" else "REJECTED"
         db.update_candidate(user_id, candidate_id, transaction_status, transaction_status, "USER_CONFIRMED")
         review_id = db.create_review(user_id, candidate_id, None, request.action, changes)
-        return {"candidate_id": candidate_id, "review_id": review_id, "status": transaction_status}
+        return {"candidate_id": candidate_id, "review_id": review_id, "status": transaction_status, "aggregate": ledger.read_aggregate(user_id)}
 
     item = _candidate_item(row, request)
     category = request.category or row.get("category_candidate")
@@ -86,7 +82,7 @@ def review_candidate(user_id: str, candidate_id: str, request: TransactionReview
     review_id = db.create_review(user_id, candidate_id, created.get("id"), request.action, changes)
     if request.action in {"CORRECT_CATEGORY", "CORRECT_MERCHANT"} and item.merchant_candidate:
         db.create_merchant_rule(user_id, item.merchant_candidate, category)
-    aggregate = _reaggregate_confirmed(user_id) if status == "CONFIRMED" else db.latest_aggregate(user_id)
+    aggregate = _reaggregate_confirmed(user_id) if status == "CONFIRMED" else ledger.read_aggregate(user_id)
     return {"candidate_id": candidate_id, "transaction_id": created.get("id"), "review_id": review_id, "status": status, "aggregate": aggregate}
 
 

@@ -6,10 +6,9 @@ from pydantic import BaseModel
 
 from app.auth import AuthenticatedUser, get_current_user
 from app.database.db import get_budgets
-from app.services.pipeline import process_raw_rows
 from app.services.normalizer import parse_sms
 from app.services.categorizer import Categorizer
-from app.services.ingestion import CSVAdapter
+from app.services.ingestion import CSVAdapter, RowsAdapter
 from app.services.ingestion.service import ingest_with_adapter
 
 router = APIRouter(prefix="/api/ingest", tags=["ingestion"])
@@ -24,14 +23,23 @@ class SMSRequest(BaseModel):
 def ingest_sms(request: SMSRequest, user: AuthenticatedUser = Depends(get_current_user)):
     try:
         transaction = parse_sms(request.sms_text)
-        transaction.category = Categorizer().categorize(transaction)
-        aggregate = process_raw_rows(
-            [transaction.dict()],
-            get_budgets(user.user_id),
-            user_id=user.user_id,
-            source="SMS",
+        # SMS used to call the processing kernel directly, so it never produced a
+        # canonical transaction. It now enters the same pipeline as every other
+        # source, which is what makes cross-source reconciliation possible.
+        result = ingest_with_adapter(
+            RowsAdapter("SMS"),
+            [{
+                "date": transaction.date.isoformat(),
+                "description": transaction.description,
+                "amount": transaction.amount,
+                "mode": transaction.mode,
+                "transaction_type": transaction.transaction_type,
+            }],
+            user.user_id,
+            budgets=get_budgets(user.user_id),
         )
-        return {"status": "processed", "category": transaction.category or "Other", "aggregate": aggregate}
+        category = Categorizer().categorize(transaction)
+        return {"status": "processed", "category": category or "Other", "aggregate": result["aggregate"]}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
